@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+// will be used to do join tracking
 class MyJoint {
 public:
     void DetectJoint(int deviceIndex, k4a_device_t openedDevice) {
