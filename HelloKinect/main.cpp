@@ -21,29 +21,32 @@
 // for UDP
 #include<winsock2.h>
 #include <Ws2tcpip.h>
+#include "main.h"
 #pragma comment(lib,"ws2_32.lib") //Winsock Library
 
-#define BUFLEN 512	//Max length of buffer
+#define BUFFERLENGTH 512	//Max length of buffer
 #define PORT 8888	//The port on which to listen for incoming data
 
+const char* pkt = "Message to be sent\n";
+sockaddr_in dest;
 
 // will be used to do join tracking
 class JointFinder {
 public:
-    void DetectJoints(int deviceIndex, k4a_device_t openedDevice) {
+    void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket) {
 
         printf("Detecting joints in %d\n", deviceIndex);
         uint32_t deviceID = deviceIndex;
 
-        int captureFrameCount = 2;
+        int captureFrameCount = 2000;
         const int32_t TIMEOUT_IN_MS = 1000;
         k4a_capture_t capture = NULL;
 
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_30;
+        config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
-        config.color_resolution = K4A_COLOR_RESOLUTION_720P;
-        config.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
+        config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
+        config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
 
         // Start capturing from the  device
         if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED)
@@ -116,7 +119,8 @@ public:
                 printf("Error! Adding capture to tracker process queue failed!\n");
                 break;
             }
-            
+
+            printf("get body");
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
             k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0);
@@ -134,13 +138,33 @@ public:
                     // for each joint in the found skeleton
                     for (uint32_t j = 0; j < 31; j++)
                     {
-                        printf(" %d | Joint %d position x:%f y:%f z:%f\n",
+                        //printf("%d | Joint %d position x:%f y:%f z:%f\n",
+                        //    deviceID,
+                        //    j,
+                        //    skeleton.joints[j].position.xyz.x,
+                        //    skeleton.joints[j].position.xyz.y,
+                        //    skeleton.joints[j].position.xyz.z
+                        //);
+                        
+                        //const char* newpkt = "%d | Joint %d position x:%4.4f y:%4.4f z:%4.4f\n",
+                        //    deviceID,
+                        //    j,
+                        //    skeleton.joints[j].position.xyz.x,
+                        //    skeleton.joints[j].position.xyz.y,
+                        //    skeleton.joints[j].position.xyz.z;
+
+                        char str[BUFFERLENGTH];
+
+                        snprintf(str, sizeof(str), "%d, %d, %f, %f, %f", 
                             deviceID,
                             j,
                             skeleton.joints[j].position.xyz.x,
                             skeleton.joints[j].position.xyz.y,
-                            skeleton.joints[j].position.xyz.z
-                        );
+                            skeleton.joints[j].position.xyz.z);
+                        pkt = str;
+
+                        sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
+                        printf(pkt);
                     }
                 }
                 // release the body frame once you finish using it
@@ -212,81 +236,73 @@ public:
     }
 };
 
-class PacketSender {
-    void sendPacket() {
-        while (1) {
-
-        }
-    };
-};
+//class PacketSender {
+//public:
+//    void sendPackets() {
+//        const char* srcIP = "127.0.0.1";
+//        const char* destIP = "127.0.0.1";
+//        sockaddr_in dest;
+//        sockaddr_in local;
+//        WSAData data;
+//        WSAStartup(MAKEWORD(2, 2), &data);
+//
+//        local.sin_family = AF_INET;
+//        inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
+//        local.sin_port = htons(0);
+//
+//        dest.sin_family = AF_INET;
+//        inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
+//        dest.sin_port = htons(PORT);
+//
+//        SOCKET socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+//        bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
+//
+//        while (1) {
+//            if (pkt != NULL)
+//            {
+//                sendto(socketToTransmit, pkt, BUFLEN, 0, (sockaddr*)&dest, sizeof(dest));
+//                pkt = NULL;
+//                printf("sending data packet");
+//            }
+//            Sleep(1000);
+//        }
+//
+//        // Stop and close the sockets when done
+//        closesocket(socketToTransmit);
+//        WSACleanup();
+//    };
+//};
 
 int main()
 {
-
-    //// create UDP server
-    //SOCKET socketToTransmit;
-    //struct sockaddr_in server, si_other;
-    //int sendStringLength;
-    //char stringBuffer[BUFLEN];
-    //WSADATA wsa;
-
-    //char message[BUFLEN];
-
-    //sendStringLength = sizeof(si_other);
-
-    ////Initialise winsock
-    //printf("\nInitialising Winsock...");
-    //if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-    //{
-    //    printf("Failed. Error Code : %d", WSAGetLastError());
-    //    exit(EXIT_FAILURE);
-    //}
-    //printf("Initialised.\n");
-
-    ////Create a socket
-    //if ((socketToTransmit = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET)
-    //{
-    //    printf("Could not create socket : %d", WSAGetLastError());
-    //}
-    //printf("Socket created.\n");
-
-
-    ////Prepare the sockaddr_in structure
-    //server.sin_family = AF_INET;
-    //server.sin_addr.s_addr = INADDR_ANY;
-    //server.sin_port = htons(PORT);
-
-    //BOOL bOptVal = FALSE;
-    //int bOptLen = sizeof(BOOL);
-    //setsockopt(socketToTransmit, SOL_SOCKET, SO_REUSEADDR, (char*) &bOptVal, bOptLen);
-
-    ////Bind
-    //if (bind(socketToTransmit, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
-    //{
-    //    printf("Bind failed with error code : %d", WSAGetLastError());
-    //    exit(EXIT_FAILURE);
-    //}
-    //printf("Bind done");
-
-    const char* pkt = "Message to be sent\n\0";
-    const char* srcIP = "127.0.0.1";  
+    const char* srcIP = "127.0.0.1";
     const char* destIP = "127.0.0.1";
-    sockaddr_in dest;
+    
     sockaddr_in local;
     WSAData data;
     WSAStartup(MAKEWORD(2, 2), &data);
-
+    
     local.sin_family = AF_INET;
     inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
     local.sin_port = htons(0);
-
+    
     dest.sin_family = AF_INET;
     inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
     dest.sin_port = htons(PORT);
-
+    
     SOCKET socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-
+    
+    /*while (1) {
+        if (pkt != NULL)
+        {
+            sendto(socketToTransmit, pkt, BUFLEN, 0, (sockaddr*)&dest, sizeof(dest));
+            pkt = NULL;
+            printf("sending data packet");
+        }
+        Sleep(1000);
+    }*/
+    
 
     //worker threads
     std::vector<std::thread> workers;
@@ -307,7 +323,7 @@ int main()
     else {
         JointFinder firstJoint;
         std::cerr << "Succesfully opened the first Kinect Azure device" << std::endl;
-        workers.push_back(std::thread{ &JointFinder::DetectJoints, &firstJoint, device1ID, device1 });
+        workers.push_back(std::thread{ &JointFinder::DetectJoints, &firstJoint, device1ID, device1, socketToTransmit });
     }
 
     // TODO: put the below in a loop rather than hardcoding 1 + 2
@@ -322,8 +338,13 @@ int main()
     else {
         JointFinder secondJoint;
         std::cerr << "Succesfully opened the second Kinect Azure device" << std::endl;
-        workers.push_back(std::thread{ &JointFinder::DetectJoints, &secondJoint, device2ID, device2 });
+        // push_back adds to end of vector list
+        workers.push_back(std::thread{ &JointFinder::DetectJoints, &secondJoint, device2ID, device2, socketToTransmit });
     }
+
+
+    //PacketSender packetSender;
+    //workers.push_back(std::thread{ &PacketSender::sendPackets, &packetSender });
 
     try {
         workers[0].join();
@@ -341,40 +362,14 @@ int main()
         while (1);
     }
 
-    for(int i = 0; i < 100; i++){
-        sendto(socketToTransmit, pkt, BUFLEN, 0, (sockaddr*)&dest, sizeof(dest));
-        printf(pkt);
+    /*try {
+        workers[2].join();
     }
+    catch (std::exception ex) {
+        printf("join() error log : %s\n", ex.what());
+        while (1);
+    }*/
 
-    //while (1)
-    //{
-    //    printf("Waiting for data...");
-    //    fflush(stdout);
-
-    //    //clear the buffer by filling null, it might have previously received data
-    //    memset(stringBuffer, '\0', BUFLEN);
-
-    //    //try to receive some data, this is a blocking call
-    //    //if ((recieveStringLength = recvfrom(socketToTransmit, stringBuffer, BUFLEN, 0, (struct sockaddr*)&si_other, &sendStringLength)) == SOCKET_ERROR)
-    //    //{
-    //    //    printf("recvfrom() failed with error code : %d", WSAGetLastError());
-    //    //    exit(EXIT_FAILURE);
-    //    //}
-
-    //    //print details of the client/peer and the data received
-    //    //printf("Received packet from %s:%d\n", inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
-    //    printf("Data: %s\n", stringBuffer);
-
-    //    strcpy_s(stringBuffer, "Testmessage\0");
-
-    //    //now reply the client with the same data
-    //    if (sendto(socketToTransmit, stringBuffer, strlen(stringBuffer), 0, (struct sockaddr*)&si_other, sendStringLength) == SOCKET_ERROR)
-    //    {
-    //        printf("sendto() failed with error code : %d", WSAGetLastError());
-    //        exit(EXIT_FAILURE);
-    //    }
-    //}
-       
     // Stop and close the sockets when done
     closesocket(socketToTransmit);
     WSACleanup();
