@@ -19,9 +19,9 @@
 #include <string.h>
 
 // will be used to do join tracking
-class MyJoint {
+class JointFinder {
 public:
-    void DetectJoint(int deviceIndex, k4a_device_t openedDevice) {
+    void DetectJoints(int deviceIndex, k4a_device_t openedDevice) {
 
         printf("Detecting joints in %d\n", deviceIndex);
         uint32_t deviceID = deviceIndex;
@@ -42,31 +42,46 @@ public:
             std::cerr << "Failed to start capturing from the first Kinect Azure device" << std::endl;
         }
         
+        // Following code to create recording
+
         char path[100]; // Define a character array to hold the file path
         int variable = deviceIndex; // Your variable
 
         // Construct the file path with the variable manually
         const char* directory = "C:\\Temp\\device"; // Replace with your directory
-        const char* extension = ".mkv"; // Replace with your desired file extension
-
-        // Copy the directory to the path
+        const char* extension = ".mkv"; 
         strcpy_s(path, directory);
 
-        // Convert the variable to a string (or use itoa if available)
+        // Convert the variable to a string 
         char variableStr[2]; // Buffer to hold the string representation of the number
         snprintf(variableStr, sizeof(variableStr), "%d", variable); // Convert the number to a string
 
-        // Concatenate the variable string to the path
+        // Concatenate the strings
         strcat_s(path, variableStr);
-
-        // Concatenate the file extension
         strcat_s(path, extension);
         
-        k4a_record_t toRecordTo = nullptr;
+        // to create the recording
+        //k4a_record_t toRecordTo = nullptr;
+        //k4a_record_create(path, openedDevice, config, &toRecordTo);
+        //k4a_record_write_header(toRecordTo);
 
-        k4a_record_create(path, openedDevice, config, &toRecordTo);
-        k4a_record_write_header(toRecordTo);
 
+        // setup sensor calibration
+        k4a_calibration_t sensor_calibration;
+        if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(openedDevice, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &sensor_calibration))
+        {
+            printf("Get depth camera calibration failed!\n");
+        }
+
+        // Set up tracker
+        k4abt_tracker_t tracker = NULL;
+        k4abt_tracker_configuration_t tracker_config = K4ABT_TRACKER_CONFIG_DEFAULT;
+        if (K4A_RESULT_SUCCEEDED != k4abt_tracker_create(&sensor_calibration, tracker_config, &tracker))
+        {
+            printf("Body tracker initialization failed!\n");
+        }
+
+        // run for defined number of frames
         while (captureFrameCount-- > 0)
         {
             k4a_image_t image;
@@ -85,67 +100,106 @@ public:
                 goto Exit;
             }
 
-            printf("Capture");
+            // get capture from tracker
+            k4a_wait_result_t queue_capture_result = k4abt_tracker_enqueue_capture(tracker, capture, 0);
+            if (queue_capture_result == K4A_WAIT_RESULT_FAILED)
+            {
+                printf("Error! Adding capture to tracker process queue failed!\n");
+                break;
+            }
+            
+            // get body frame from tracker
+            k4abt_frame_t body_frame = NULL;
+            k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0);
+            if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
+            {
+                // Successfully popped the body tracking result
+                printf("Capture body");
+                size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
+                // for each found body
+                for (size_t i = 0; i < num_bodies; i++)
+                {
+                    k4abt_skeleton_t skeleton;
+                    k4abt_frame_get_body_skeleton(body_frame, i, &skeleton);
+                    uint32_t id = k4abt_frame_get_body_id(body_frame, i);
+                    // for each joint in the found skeleton
+                    for (uint32_t j = 0; j < 31; j++)
+                    {
+                        printf(" %d | Joint %d position x:%f y:%f z:%f\n",
+                            deviceID,
+                            j,
+                            skeleton.joints[j].position.xyz.x,
+                            skeleton.joints[j].position.xyz.y,
+                            skeleton.joints[j].position.xyz.z
+                        );
+                    }
+                }
+                // release the body frame once you finish using it
+                k4abt_frame_release(body_frame); 
+            }
 
-            // Probe for a color image
-            image = k4a_capture_get_color_image(capture);
-            if (image)
-            {
-                printf(" %d | Color res:%4dx%4d stride:%5d ",
-                    deviceID,
-                    k4a_image_get_height_pixels(image),
-                    k4a_image_get_width_pixels(image),
-                    k4a_image_get_stride_bytes(image));
-                k4a_image_release(image);
-                
-                k4a_record_write_capture(toRecordTo, capture);
-            }
-            else
-            {
-                printf(" | Color None                       ");
-            }
+            //// Probe for a color image
+            //image = k4a_capture_get_color_image(capture);
+            //if (image)
+            //{
+            //    printf(" %d | Color res:%4dx%4d stride:%5d ",
+            //        deviceID,
+            //        k4a_image_get_height_pixels(image),
+            //        k4a_image_get_width_pixels(image),
+            //        k4a_image_get_stride_bytes(image));
+            //    k4a_image_release(image);
+            //    
+            //    k4a_record_write_capture(toRecordTo, capture);
+            //}
+            //else
+            //{
+            //    printf(" | Color None                       ");
+            //}
 
-            // probe for a IR16 image
-            image = k4a_capture_get_ir_image(capture);
-            if (image != NULL)
-            {
-                printf(" | Ir16 res:%4dx%4d stride:%5d ",
-                    k4a_image_get_height_pixels(image),
-                    k4a_image_get_width_pixels(image),
-                    k4a_image_get_stride_bytes(image));
-                k4a_image_release(image);
-            }
-            else
-            {
-                printf(" | Ir16 None                       ");
-            }
+            //// probe for a IR16 image
+            //image = k4a_capture_get_ir_image(capture);
+            //if (image != NULL)
+            //{
+            //    printf(" | Ir16 res:%4dx%4d stride:%5d ",
+            //        k4a_image_get_height_pixels(image),
+            //        k4a_image_get_width_pixels(image),
+            //        k4a_image_get_stride_bytes(image));
+            //    k4a_image_release(image);
+            //}
+            //else
+            //{
+            //    printf(" | Ir16 None                       ");
+            //}
 
-            // Probe for a depth16 image
-            image = k4a_capture_get_depth_image(capture);
-            if (image != NULL)
-            {
-                printf(" | Depth16 res:%4dx%4d stride:%5d\n",
-                    k4a_image_get_height_pixels(image),
-                    k4a_image_get_width_pixels(image),
-                    k4a_image_get_stride_bytes(image));
-                k4a_image_release(image);
-            }
-            else
-            {
-                printf(" | Depth16 None\n");
-            }
+            //// Probe for a depth16 image
+            //image = k4a_capture_get_depth_image(capture);
+            //if (image != NULL)
+            //{
+            //    printf(" | Depth16 res:%4dx%4d stride:%5d\n",
+            //        k4a_image_get_height_pixels(image),
+            //        k4a_image_get_width_pixels(image),
+            //        k4a_image_get_stride_bytes(image));
+            //    k4a_image_release(image);
+            //}
+            //else
+            //{
+            //    printf(" | Depth16 None\n");
+            //}
 
             // release capture
             k4a_capture_release(capture);
-            fflush(stdout);
+            //fflush(stdout);
         }
-        Exit:
-        if (openedDevice != NULL)
-        {
-            k4a_record_flush(toRecordTo);
-            k4a_record_close(toRecordTo);
-            //k4a_device_close(openedDevice);
-        }
+    Exit:
+        printf("Exit\n");
+        k4abt_tracker_destroy(tracker);
+
+        //for record
+        //k4a_record_flush(toRecordTo);
+        //k4a_record_close(toRecordTo);
+
+
+        //k4a_device_close(openedDevice);
     }
 };
 
@@ -168,10 +222,12 @@ int main()
         return 1;
     }
     else {
-        MyJoint firstJoint;
+        JointFinder firstJoint;
         std::cerr << "Succesfully opened the first Kinect Azure device" << std::endl;
-        workers.push_back(std::thread{ &MyJoint::DetectJoint, &firstJoint, device1ID, device1});
+        workers.push_back(std::thread{ &JointFinder::DetectJoints, &firstJoint, device1ID, device1});
     }
+
+    // TODO: put the below in a loop rather than hardcoding 1 + 2
 
     // Open the second Kinect Azure device
     k4a_device_t device2 = nullptr;
@@ -181,9 +237,9 @@ int main()
         return 1;
     }
     else {
-        MyJoint secondJoint;
+        JointFinder secondJoint;
         std::cerr << "Succesfully opened the second Kinect Azure device" << std::endl;
-        workers.push_back(std::thread{ &MyJoint::DetectJoint, &secondJoint, device2ID, device2 });
+        workers.push_back(std::thread{ &JointFinder::DetectJoints, &secondJoint, device2ID, device2 });
     }
 
     try {
@@ -201,44 +257,6 @@ int main()
         printf("join() error log : %s\n", ex.what());
         while (1);
     }
-
-    // Start capturing from the first device
-    //if (k4a_device_start_cameras(device1, nullptr) != K4A_RESULT_SUCCEEDED)
-    //{
-    //    std::cerr << "Failed to start capturing from the first Kinect Azure device" << std::endl;
-    //    return 1;
-    //}
-
-    //// Start capturing from the second device
-    //if (k4a_device_start_cameras(device2, nullptr) != K4A_RESULT_SUCCEEDED)
-    //{
-    //    std::cerr << "Failed to start capturing from the second Kinect Azure device" << std::endl;
-    //    return 1;
-    //}
-
-    //// Capture and process frames from both devices
-    //while (true)
-    //{
-    //    k4a_capture_t capture1 = nullptr;
-    //    if (k4a_device_get_capture(device1, &capture1, K4A_WAIT_INFINITE) != K4A_WAIT_RESULT_SUCCEEDED)
-    //    {
-    //        std::cerr << "Failed to get a capture from the first Kinect Azure device" << std::endl;
-    //        return 1;
-    //    }
-
-    //    k4a_capture_t capture2 = nullptr;
-    //    if (k4a_device_get_capture(device2, &capture2, K4A_WAIT_INFINITE) != K4A_WAIT_RESULT_SUCCEEDED)
-    //    {
-    //        std::cerr << "Failed to get a capture from the second Kinect Azure device" << std::endl;
-    //        return 1;
-    //    }
-
-    //    // Process the captured frames from both devices here
-
-    //    // Release the captures
-    //    k4a_capture_release(capture1);
-    //    k4a_capture_release(capture2);
-    //}
 
     // Stop and close the devices when done
     k4a_device_stop_cameras(device1);
