@@ -120,14 +120,14 @@ public:
                 break;
             }
 
-            printf("get body");
+            //printf("get body");
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
             k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0);
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
                 // Successfully popped the body tracking result
-                printf("Capture body");
+                printf("Scanning...\n");
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
                 // for each found body
                 for (size_t i = 0; i < num_bodies; i++)
@@ -138,33 +138,23 @@ public:
                     // for each joint in the found skeleton
                     for (uint32_t j = 0; j < 31; j++)
                     {
-                        //printf("%d | Joint %d position x:%f y:%f z:%f\n",
-                        //    deviceID,
-                        //    j,
-                        //    skeleton.joints[j].position.xyz.x,
-                        //    skeleton.joints[j].position.xyz.y,
-                        //    skeleton.joints[j].position.xyz.z
-                        //);
-                        
-                        //const char* newpkt = "%d | Joint %d position x:%4.4f y:%4.4f z:%4.4f\n",
-                        //    deviceID,
-                        //    j,
-                        //    skeleton.joints[j].position.xyz.x,
-                        //    skeleton.joints[j].position.xyz.y,
-                        //    skeleton.joints[j].position.xyz.z;
+                        // if the model is confident it saw something
 
                         char str[BUFFERLENGTH];
-
-                        snprintf(str, sizeof(str), "%d, %d, %f, %f, %f", 
-                            deviceID,
-                            j,
-                            skeleton.joints[j].position.xyz.x,
-                            skeleton.joints[j].position.xyz.y,
-                            skeleton.joints[j].position.xyz.z);
-                        pkt = str;
-
-                        sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
-                        printf(pkt);
+                        if (skeleton.joints[j].confidence_level > 1) {
+                            snprintf(str, sizeof(str), "%d, %d, %d, %f, %f, %f",
+                                deviceID,
+                                j,
+                                skeleton.joints[j].confidence_level,
+                                skeleton.joints[j].position.xyz.x,
+                                skeleton.joints[j].position.xyz.y,
+                                skeleton.joints[j].position.xyz.z);
+                            pkt = str;
+                            // clear the screen
+                            sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
+                            printf(pkt);
+                            printf("\n");
+                        }
                     }
                 }
                 // release the body frame once you finish using it
@@ -231,47 +221,9 @@ public:
         //k4a_record_flush(toRecordTo);
         //k4a_record_close(toRecordTo);
 
-
         //k4a_device_close(openedDevice);
     }
 };
-
-//class PacketSender {
-//public:
-//    void sendPackets() {
-//        const char* srcIP = "127.0.0.1";
-//        const char* destIP = "127.0.0.1";
-//        sockaddr_in dest;
-//        sockaddr_in local;
-//        WSAData data;
-//        WSAStartup(MAKEWORD(2, 2), &data);
-//
-//        local.sin_family = AF_INET;
-//        inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
-//        local.sin_port = htons(0);
-//
-//        dest.sin_family = AF_INET;
-//        inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
-//        dest.sin_port = htons(PORT);
-//
-//        SOCKET socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-//        bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-//
-//        while (1) {
-//            if (pkt != NULL)
-//            {
-//                sendto(socketToTransmit, pkt, BUFLEN, 0, (sockaddr*)&dest, sizeof(dest));
-//                pkt = NULL;
-//                printf("sending data packet");
-//            }
-//            Sleep(1000);
-//        }
-//
-//        // Stop and close the sockets when done
-//        closesocket(socketToTransmit);
-//        WSACleanup();
-//    };
-//};
 
 int main()
 {
@@ -292,17 +244,7 @@ int main()
     
     SOCKET socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-    
-    /*while (1) {
-        if (pkt != NULL)
-        {
-            sendto(socketToTransmit, pkt, BUFLEN, 0, (sockaddr*)&dest, sizeof(dest));
-            pkt = NULL;
-            printf("sending data packet");
-        }
-        Sleep(1000);
-    }*/
-    
+   
 
     //worker threads
     std::vector<std::thread> workers;
@@ -323,6 +265,7 @@ int main()
     else {
         JointFinder firstJoint;
         std::cerr << "Succesfully opened the first Kinect Azure device" << std::endl;
+        // push_back adds to end of vector list
         workers.push_back(std::thread{ &JointFinder::DetectJoints, &firstJoint, device1ID, device1, socketToTransmit });
     }
 
@@ -338,7 +281,6 @@ int main()
     else {
         JointFinder secondJoint;
         std::cerr << "Succesfully opened the second Kinect Azure device" << std::endl;
-        // push_back adds to end of vector list
         workers.push_back(std::thread{ &JointFinder::DetectJoints, &secondJoint, device2ID, device2, socketToTransmit });
     }
 
@@ -362,15 +304,7 @@ int main()
         while (1);
     }
 
-    /*try {
-        workers[2].join();
-    }
-    catch (std::exception ex) {
-        printf("join() error log : %s\n", ex.what());
-        while (1);
-    }*/
-
-    // Stop and close the sockets when done
+    // Stop and close the socket when done
     closesocket(socketToTransmit);
     WSACleanup();
 
