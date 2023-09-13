@@ -18,6 +18,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// for file operations
+#include <fstream> 
+
+
 // for UDP
 #include<winsock2.h>
 #include <Ws2tcpip.h>
@@ -30,6 +34,11 @@
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
 
+std::string textToWrite = "";
+
+// Open a file for writing
+std::ofstream outputFile("C:\\Temp\\output.txt");
+
 // will be used to do join tracking
 class JointFinder {
 public:
@@ -38,12 +47,12 @@ public:
         printf("Detecting joints in %d\n", deviceIndex);
         uint32_t deviceID = deviceIndex;
 
-        int captureFrameCount = 2000;
+        int captureFrameCount = 200000;
         const int32_t TIMEOUT_IN_MS = 1000;
         k4a_capture_t capture = NULL;
 
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
         config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
@@ -76,7 +85,6 @@ public:
         //k4a_record_t toRecordTo = nullptr;
         //k4a_record_create(path, openedDevice, config, &toRecordTo);
         //k4a_record_write_header(toRecordTo);
-
 
         // setup sensor calibration
         k4a_calibration_t sensor_calibration;
@@ -112,6 +120,17 @@ public:
                 goto Exit;
             }
 
+            LARGE_INTEGER frequency, start, end;
+
+            // Get the frequency of the performance counter
+            QueryPerformanceFrequency(&frequency);
+
+            // Start the timer
+            QueryPerformanceCounter(&start);
+
+            // Place your code or tasks here that you want to measure
+
+
             // get capture from tracker
             k4a_wait_result_t queue_capture_result = k4abt_tracker_enqueue_capture(tracker, capture, 0);
             if (queue_capture_result == K4A_WAIT_RESULT_FAILED)
@@ -120,6 +139,8 @@ public:
                 break;
             }
 
+
+
             //printf("get body");
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
@@ -127,7 +148,7 @@ public:
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
                 // Successfully popped the body tracking result
-                printf("Scanning...\n");
+                printf("Frame found. Scanning for bodies...\n");
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
                 // for each found body
                 for (size_t i = 0; i < num_bodies; i++)
@@ -136,30 +157,51 @@ public:
                     k4abt_frame_get_body_skeleton(body_frame, i, &skeleton);
                     uint32_t id = k4abt_frame_get_body_id(body_frame, i);
                     // for each joint in the found skeleton
-                    for (uint32_t j = 0; j < 31; j++)
+                    for (uint32_t j = 0; j < 32; j++)
                     {
-                        // if the model is confident it saw something
-
                         char str[BUFFERLENGTH];
-                        if (skeleton.joints[j].confidence_level > 1) {
-                            snprintf(str, sizeof(str), "%d, %d, %d, %f, %f, %f",
-                                deviceID,
-                                j,
-                                skeleton.joints[j].confidence_level,
-                                skeleton.joints[j].position.xyz.x,
-                                skeleton.joints[j].position.xyz.y,
-                                skeleton.joints[j].position.xyz.z);
-                            pkt = str;
-                            // clear the screen
-                            sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
-                            printf(pkt);
-                            printf("\n");
-                        }
+                        snprintf(str, sizeof(str), "%d, %d, %d, %f, %f, %f",
+                            deviceID,
+                            j,
+                            skeleton.joints[j].confidence_level,
+                            skeleton.joints[j].position.xyz.x,
+                            skeleton.joints[j].position.xyz.y,
+                            skeleton.joints[j].position.xyz.z);
+                        pkt = str;
+                        // clear the screen
+                        sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
+                        //printf(pkt);
+                        //printf("\n");
                     }
                 }
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame); 
+
+
+                // Stop the timer
+                QueryPerformanceCounter(&end);
+
+                // Calculate the elapsed time in microseconds
+                double elapsedMicroseconds = static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1e6;
+                // Print the elapsed time
+                printf("%.2lf\n", elapsedMicroseconds);
+
+
+                // Convert the variable to a string 
+                char variableStrForms[20]; // Buffer to hold the string representation of the number
+                snprintf(variableStrForms, sizeof(variableStrForms), "%d", deviceID); // Convert the number to a string
+
+                textToWrite += variableStrForms;    // Write the text to the file
+                textToWrite += ",";    // Write the text to the file
+
+                snprintf(variableStrForms, sizeof(variableStrForms), "%.2lf", elapsedMicroseconds); // Convert the number to a string
+
+                textToWrite += variableStrForms;    // Write the text to the file
+                textToWrite += "\n";    // Write the text to the file
+                outputFile << textToWrite;
             }
+
+
 
             //// Probe for a color image
             //image = k4a_capture_get_color_image(capture);
@@ -227,6 +269,14 @@ public:
 
 int main()
 {
+
+
+    // Check if the file is open
+    if (!outputFile.is_open()) {
+        std::cerr << "Failed to open the file." << std::endl;
+        return 1; // Return an error code
+    }
+
     const char* srcIP = "127.0.0.1";
     const char* destIP = "127.0.0.1";
     
@@ -244,16 +294,19 @@ int main()
     
     SOCKET socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-   
 
     //worker threads
     std::vector<std::thread> workers;
+
     uint32_t device1ID = 0;
     uint32_t device2ID = 1;
 
     uint32_t device_count = k4a_device_get_installed_count();
 
     printf("Found %d connected devices:\n", device_count);
+
+    uint32_t deviceIDs[10];
+
 
     // Open the first Kinect Azure device
     k4a_device_t device1 = nullptr;
@@ -269,6 +322,9 @@ int main()
         workers.push_back(std::thread{ &JointFinder::DetectJoints, &firstJoint, device1ID, device1, socketToTransmit });
     }
 
+
+
+
     // TODO: put the below in a loop rather than hardcoding 1 + 2
 
     // Open the second Kinect Azure device
@@ -283,7 +339,6 @@ int main()
         std::cerr << "Succesfully opened the second Kinect Azure device" << std::endl;
         workers.push_back(std::thread{ &JointFinder::DetectJoints, &secondJoint, device2ID, device2, socketToTransmit });
     }
-
 
     //PacketSender packetSender;
     //workers.push_back(std::thread{ &PacketSender::sendPackets, &packetSender });
@@ -303,6 +358,14 @@ int main()
         printf("join() error log : %s\n", ex.what());
         while (1);
     }
+
+
+
+    // Close the file
+    outputFile.close();
+
+    std::cout << "Text written to the file successfully." << std::endl;
+
 
     // Stop and close the socket when done
     closesocket(socketToTransmit);
