@@ -33,10 +33,10 @@
 
 // Toggle functions
 //
-bool OPENCAPTUREFRAMES = false;         // typically set to false.
-bool RECORDCAPTURESTOVIDEO = false;     // records capture, not needed at the moment
-bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
-bool SENDJOINTSVIAUDP = true;           // sets up sockets and sends data using UDP
+bool OPENCAPTUREFRAMES = false;         // Open Capture Frames. typically set to false.
+bool RECORDCAPTURESTOVIDEO = false;     // Record Captures To Video. records capture, not needed at the moment
+bool RECORDTIMESTAMPS = false;          // Record Time Stamps. logs timestamps to outputFile
+bool SENDJOINTSVIAUDP = true;           // Send Joints via UDP. Sets up sockets and sends data using UDP
 //
 //
 
@@ -48,6 +48,9 @@ std::string textToWrite = "";
 // Open a file for writing
 std::ofstream outputFile("C:\\Temp\\output.txt");
 
+const char* srcIP = "127.0.0.1";
+const char* destIP = "127.0.0.1";
+
 
 void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency, const int32_t deviceID)
 {
@@ -56,6 +59,7 @@ void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency,
 
     // Calculate the elapsed time in microseconds
     double elapsedMicroseconds = static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1e6;
+
     // Print the elapsed time
     //printf("%.2lf\n", elapsedMicroseconds);
 
@@ -70,13 +74,14 @@ void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency,
 
     textToWrite += variableStrForms;    // Write the text to the file
     textToWrite += "\n";    // Write the text to the file
-    // uncomment to print to textfile
+
+    // Print to textfile
     outputFile << textToWrite;
     textToWrite = "";
 }
 
 
-// will be used to do joint tracking
+// Each Kinect is a JointFinder.
 class JointFinder {
 public:
     void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket) {
@@ -97,12 +102,12 @@ public:
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
         config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
 
-        // Start capturing from the  device
+        // Start capturing from the device
         if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED)
         {
-            std::cerr << "Failed to start capturing from the first Kinect Azure device" << std::endl;
+            std::cerr << "Failed to start capturing from the Kinect Azure device" << std::endl;
         }
-
+         
 
         // Following code sets up recording for this device
         char path[255]; // Define a character array to hold the file path
@@ -467,9 +472,6 @@ int main()
     SOCKET socketToTransmit = NULL;
 
     if (SENDJOINTSVIAUDP) {
-        const char* srcIP = "127.0.0.1";
-        const char* destIP = "127.0.0.1";
-
         sockaddr_in local;
         WSAData data;
         WSAStartup(MAKEWORD(2, 2), &data);
@@ -492,10 +494,12 @@ int main()
 
     uint32_t device_count = k4a_device_get_installed_count();
 
-    //Force number of devices For Debugging
+    //Force number of devices For Debugging 
     //device_count = 4;
 
     printf("Found %d connected devices:\n", device_count);
+
+    // Max devices is 4 (arbritrary)
     k4a_device_t devices[4] = { nullptr,nullptr,nullptr,nullptr };
 
     for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
