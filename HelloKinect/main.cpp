@@ -35,8 +35,8 @@
 //
 bool OPENCAPTUREFRAMES = false;         // typically set to false.
 bool RECORDCAPTURESTOVIDEO = false;     // records capture, not needed at the moment
-bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
-bool SENDJOINTSVIAUDP = false;           // sets up sockets and sends data using UDP
+bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
+bool SENDJOINTSVIAUDP = true;           // sets up sockets and sends data using UDP
 //
 //
 
@@ -75,22 +75,24 @@ void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency,
     textToWrite = "";
 }
 
-// will be used to do join tracking
+
+// will be used to do joint tracking
 class JointFinder {
 public:
     void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket) {
         printf("Detecting joints in %d\n", deviceIndex);
-        
+
         uint32_t deviceID = deviceIndex;
 
-        int captureFrameCount = 250;
+        int captureFrameCount = 25000;
         const int32_t TIMEOUT_IN_MS = 1000;
+        printf("ok");
 
         k4a_capture_t capture = NULL;
 
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
         config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
@@ -198,15 +200,40 @@ public:
                     // for each joint in the found skeleton
                     for (uint32_t skeletonCounter = 0; skeletonCounter < 32; skeletonCounter++)
                     {
+                        // create simple quaternion
+                        k4a_quaternion_t currentJointQuaternion;
+                        currentJointQuaternion.wxyz.w = skeleton.joints[skeletonCounter].orientation.wxyz.w;
+                        currentJointQuaternion.wxyz.x = skeleton.joints[skeletonCounter].orientation.wxyz.x;
+                        currentJointQuaternion.wxyz.y = skeleton.joints[skeletonCounter].orientation.wxyz.y;
+                        currentJointQuaternion.wxyz.z = skeleton.joints[skeletonCounter].orientation.wxyz.z;
+
+                        // change coordinate system via rotation around axis
+                        // TODO change this transform depending on joint using getInverseQuaternion
+                        k4a_quaternion_t transformedQuart = AngleAxis(90, currentJointQuaternion);
+
+                        transformedQuart = multiplyQuaternion(skeleton.joints[skeletonCounter].orientation, currentJointQuaternion);
+
+                        // convert quaternion to rotator
+                        float thisPitch = Pitch(currentJointQuaternion);
+                        float thisYaw = Yaw(currentJointQuaternion);
+                        float thisRoll = Roll(currentJointQuaternion);
+
                         char str[BUFFERLENGTH];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %f, %f, %f",
+                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %f, %f, %f, %f, %f, %f",
                             deviceID,
                             bodyCounter,
                             skeletonCounter,
                             skeleton.joints[skeletonCounter].confidence_level,
                             skeleton.joints[skeletonCounter].position.xyz.x,
                             skeleton.joints[skeletonCounter].position.xyz.y,
-                            skeleton.joints[skeletonCounter].position.xyz.z);
+                            skeleton.joints[skeletonCounter].position.xyz.z,
+                            thisRoll, 
+                            thisYaw, 
+                            thisPitch
+                        );
+
+                        printf(str);
+                        printf("\n");
 
                         if (SENDJOINTSVIAUDP) {
                             pkt = str;
@@ -221,7 +248,7 @@ public:
                     // Stop the timer
                     QueryPerformanceCounter(&end);
 
-                    writeToLog(end,start,frequency,deviceID);
+                    writeToLog(end, start, frequency, deviceID);
                 }
             }
             if (OPENCAPTUREFRAMES)
@@ -291,7 +318,131 @@ public:
         }
     }
 
+    float Pitch(k4a_quaternion_t quart)
+    {
+        float value1 = 2.0 * (quart.wxyz.w * quart.wxyz.x + quart.wxyz.y * quart.wxyz.z);
+        float value2 = 1.0 - 2.0 * (quart.wxyz.x * quart.wxyz.x + quart.wxyz.y * quart.wxyz.y);
+
+        float roll = atan2(value1, value2);
+
+        return roll * (180.0 / 3.141592653589793116);
+    }
+
+    float Yaw(k4a_quaternion_t quart)
+    {
+        double value = +2.0 * (quart.wxyz.w * quart.wxyz.y - quart.wxyz.z * quart.wxyz.x);
+        value = value > 1.0 ? 1.0 : value;
+        value = value < -1.0 ? -1.0 : value;
+
+        float pitch = asin(value);
+
+        return pitch * (180.0 / 3.141592653589793116);
+    }
+
+    float Roll(k4a_quaternion_t quart)
+    {
+        float value1 = 2.0 * (quart.wxyz.w * quart.wxyz.z + quart.wxyz.x * quart.wxyz.y);
+        float value2 = 1.0 - 2.0 * (quart.wxyz.y * quart.wxyz.y + quart.wxyz.z * quart.wxyz.z);
+
+        float yaw = atan2(value1, value2);
+
+        return yaw * (180.0 / 3.141592653589793116);
+    }
+
+    k4a_quaternion_t AngleAxis(float angle, k4a_quaternion_t axis) {
+
+        // First normalise the axis
+        float x, y, z;
+        x = axis.wxyz.x; y = axis.wxyz.y; z = axis.wxyz.z;
+        float magnitude = std::sqrt(x * x + y * y + z * z);
+
+        // Check if the magnitude is not zero to avoid division by zero
+        if (magnitude != 0) {
+            x /= magnitude;
+            y /= magnitude;
+            z /= magnitude;
+        }
+
+        angle *= 0.0174532925f; // To radians!
+        angle *= 0.5f;
+        float sinAngle = sin(angle);
+
+        // create and return the quaternion
+        k4a_quaternion_t returnQuart;
+        returnQuart.wxyz.w = cos(angle);
+        returnQuart.wxyz.x = x * sinAngle;
+        returnQuart.wxyz.y = y * sinAngle;
+        returnQuart.wxyz.z = z * sinAngle;
+
+        return returnQuart;
+    }
+
+    k4a_quaternion_t multiplyQuaternion(k4a_quaternion_t first, k4a_quaternion_t second) {
+        k4a_quaternion_t returnQuart;
+        returnQuart.wxyz.w = first.wxyz.w * second.wxyz.w - first.wxyz.x * second.wxyz.x - first.wxyz.y * second.wxyz.y - first.wxyz.z * second.wxyz.z;
+        returnQuart.wxyz.x = first.wxyz.w * second.wxyz.x + first.wxyz.x * second.wxyz.w + first.wxyz.y * second.wxyz.z - first.wxyz.z * second.wxyz.y;
+        returnQuart.wxyz.y = first.wxyz.w * second.wxyz.y - first.wxyz.x * second.wxyz.z + first.wxyz.y * second.wxyz.w + first.wxyz.z * second.wxyz.x;
+        returnQuart.wxyz.z = first.wxyz.w * second.wxyz.z + first.wxyz.x * second.wxyz.y - first.wxyz.y * second.wxyz.x + first.wxyz.z * second.wxyz.w;
+        return returnQuart;
+    }
+
+    /*
+    k4a_quaternion_t getInverseQuaternion(int jointNumber) {
+        switch (jointNumber) {
+        case 0:	    //  PELVIS
+        case 1:	    //	SPINE_NAVAL
+        case 2:	    //	SPINE_CHEST
+        case 3:	    //	NECK
+        case 26:	//	HEAD
+        case 18:	//	HIP_LEFT
+        case 19:	//	KNEE_LEFT
+        case 20:	//	ANKLE_LEFT
+            //quart newAxis(0, 1, 0, 0);
+            //quart newAxis2(0, 0, 0, 1);
+            //newAxis = AngleAxis(90, newAxis) * AngleAxis(-90, newAxis);
+
+        case 21:	//	FOOT_LEFT
+
+        case 22:	//	HIP_RIGHT
+        case 23:	//	KNEE_RIGHT
+        case 24:	//	ANKLE_RIGHT
+
+        case 25:	//	FOOT_RIGHT
+
+        case 4:	    //	CLAVICLE_LEFT
+        case 5:	    //	SHOULDER_LEFT
+        case 6:	    //	ELBOW_LEFT
+
+        case 7:	    //	WRIST_LEFT
+
+        case 11:	//	CLAVICLE_RIGHT
+        case 12:	//	SHOULDER_RIGHT
+        case 13:	//	ELBOW_RIGHT
+
+
+        case 14:	//	WRIST_RIGHT
+
+
+        case 8:	    //	HAND_LEFT
+        case 9:	    //	HANDTIP_LEFT
+        case 10:	//	THUMB_LEFT
+        case 15:	//	HAND_RIGHT
+        case 16:	//	HANDTIP_RIGHT
+        case 17:	//	THUMB_RIGHT
+        case 27:	//	NOSE
+        case 28:	//	EYE_LEFT
+        case 29:	//	EAR_LEFT
+        case 30:	//	EYE_RIGHT
+        case 31:	//	EAR_RIGHT
+        default:
+            //quart newQ(1,0,0,0);
+        }
+        k4a_quaternion_t quartToReturn;
+    }
+
+    */
 };
+
 
 int main()
 {
@@ -333,6 +484,7 @@ int main()
 
         socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
+
     }
 
     //worker threads
