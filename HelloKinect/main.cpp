@@ -32,54 +32,18 @@
 #define PORT 8888	//The port on which to listen for incoming data
 
 // Toggle functions
-//
-bool OPENCAPTUREFRAMES = false;         // Open Capture Frames. typically set to false.
-bool RECORDCAPTURESTOVIDEO = false;     // Record Captures To Video. records capture, not needed at the moment
-bool RECORDTIMESTAMPS = false;          // Record Time Stamps. logs timestamps to outputFile
+bool OPENCAPTUREFRAMES = false;         // Open Capture Frames for debugging. typically set to false.
 bool SENDJOINTSVIAUDP = true;           // Send Joints via UDP. Sets up sockets and sends data using UDP
-//
-//
+
+// BIG TODO, MAKE TCP CONNECTION
+
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
 
-std::string textToWrite = "";
-
-// Open a file for writing
-std::ofstream outputFile("C:\\Temp\\output.txt");
-
 const char* srcIP = "127.0.0.1";
 const char* destIP = "127.0.0.1";
-
-
-void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency, const int32_t deviceID)
-{
-    // Stop the timer
-    QueryPerformanceCounter(&end);
-
-    // Calculate the elapsed time in microseconds
-    double elapsedMicroseconds = static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1e6;
-
-    // Print the elapsed time
-    //printf("%.2lf\n", elapsedMicroseconds);
-
-    // Convert the variable to a string 
-    char variableStrForms[20]; // Buffer to hold the string representation of the number
-    snprintf(variableStrForms, sizeof(variableStrForms), "%d", deviceID); // Convert the number to a string
-
-    textToWrite += variableStrForms;    // Write the text to the file
-    textToWrite += ",";    // Write the text to the file
-
-    snprintf(variableStrForms, sizeof(variableStrForms), "%.2lf", elapsedMicroseconds); // Convert the number to a string
-
-    textToWrite += variableStrForms;    // Write the text to the file
-    textToWrite += "\n";    // Write the text to the file
-
-    // Print to textfile
-    outputFile << textToWrite;
-    textToWrite = "";
-}
-
+//const char* destIP = "192.168.103.98";
 
 // Each Kinect is a JointFinder.
 class JointFinder {
@@ -109,31 +73,6 @@ public:
         }
          
 
-        // Following code sets up recording for this device
-        char path[255]; // Define a character array to hold the file path
-        k4a_record_t toRecordTo = nullptr;
-        if (RECORDCAPTURESTOVIDEO) {
-
-            int variable = deviceIndex; // Your variable
-
-            // Construct the file path with the variable manually
-            const char* directory = "C:\\Temp\\device"; // Replace with your directory
-            const char* extension = ".mkv";
-            strcpy_s(path, directory);
-
-            // Convert the variable to a string 
-            char variableStr[2]; // Buffer to hold the string representation of the number
-            snprintf(variableStr, sizeof(variableStr), "%d", variable); // Convert the number to a string
-
-            // Concatenate the strings
-            strcat_s(path, variableStr);
-            strcat_s(path, extension);
-
-            // to create and start the recording
-            k4a_record_create(path, openedDevice, config, &toRecordTo);
-            k4a_record_write_header(toRecordTo);
-        }
-
         // setup sensor calibration
         k4a_calibration_t sensor_calibration;
         if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(openedDevice, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &sensor_calibration))
@@ -154,15 +93,9 @@ public:
         {
             k4a_image_t image;
             printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
+            
             // start timer
             LARGE_INTEGER frequency, start, end;
-            if (RECORDTIMESTAMPS) {
-                // Get the frequency of the performance counter
-                QueryPerformanceFrequency(&frequency);
-
-                // Start the timer
-                QueryPerformanceCounter(&start);
-            }
 
             // Get a depth frame
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
@@ -202,21 +135,21 @@ public:
                     k4abt_frame_get_body_skeleton(body_frame, bodyCounter, &skeleton);
                     uint32_t id = k4abt_frame_get_body_id(body_frame, bodyCounter);
 
-                    // for each joint in the found skeleton
-                    for (uint32_t skeletonCounter = 0; skeletonCounter < 32; skeletonCounter++)
+                    // for each joint in the found body
+                    for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
                         // create simple quaternion
                         k4a_quaternion_t currentJointQuaternion;
-                        currentJointQuaternion.wxyz.w = skeleton.joints[skeletonCounter].orientation.wxyz.w;
-                        currentJointQuaternion.wxyz.x = skeleton.joints[skeletonCounter].orientation.wxyz.x;
-                        currentJointQuaternion.wxyz.y = skeleton.joints[skeletonCounter].orientation.wxyz.y;
-                        currentJointQuaternion.wxyz.z = skeleton.joints[skeletonCounter].orientation.wxyz.z;
+                        currentJointQuaternion.wxyz.w = skeleton.joints[jointCounter].orientation.wxyz.w;
+                        currentJointQuaternion.wxyz.x = skeleton.joints[jointCounter].orientation.wxyz.x;
+                        currentJointQuaternion.wxyz.y = skeleton.joints[jointCounter].orientation.wxyz.y;
+                        currentJointQuaternion.wxyz.z = skeleton.joints[jointCounter].orientation.wxyz.z;
 
                         // change coordinate system via rotation around axis
                         // TODO change this transform depending on joint using getInverseQuaternion
                         k4a_quaternion_t transformedQuart = AngleAxis(90, currentJointQuaternion);
 
-                        transformedQuart = multiplyQuaternion(skeleton.joints[skeletonCounter].orientation, currentJointQuaternion);
+                        transformedQuart = multiplyQuaternion(skeleton.joints[jointCounter].orientation, currentJointQuaternion);
 
                         // convert quaternion to rotator
                         float thisPitch = Pitch(currentJointQuaternion);
@@ -227,11 +160,11 @@ public:
                         snprintf(str, sizeof(str), "%d, %d, %d, %d, %f, %f, %f, %f, %f, %f",
                             deviceID,
                             bodyCounter,
-                            skeletonCounter,
-                            skeleton.joints[skeletonCounter].confidence_level,
-                            skeleton.joints[skeletonCounter].position.xyz.x,
-                            skeleton.joints[skeletonCounter].position.xyz.y,
-                            skeleton.joints[skeletonCounter].position.xyz.z,
+                            jointCounter,
+                            skeleton.joints[jointCounter].confidence_level,
+                            skeleton.joints[jointCounter].position.xyz.x,
+                            skeleton.joints[jointCounter].position.xyz.y,
+                            skeleton.joints[jointCounter].position.xyz.z,
                             thisRoll, 
                             thisYaw, 
                             thisPitch
@@ -248,14 +181,8 @@ public:
                 }
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
-
-                if (RECORDTIMESTAMPS) {
-                    // Stop the timer
-                    QueryPerformanceCounter(&end);
-
-                    writeToLog(end, start, frequency, deviceID);
-                }
             }
+
             if (OPENCAPTUREFRAMES)
             {
                 // Probe for a color image
@@ -268,44 +195,10 @@ public:
                         k4a_image_get_width_pixels(image),
                         k4a_image_get_stride_bytes(image));
                     k4a_image_release(image);
-
-                    if (RECORDCAPTURESTOVIDEO) {
-                        k4a_record_write_capture(toRecordTo, capture);
-                    }
                 }
                 else
                 {
-                    printf(" | Color None                       ");
-                }
-
-                // probe for a IR16 image
-                image = k4a_capture_get_ir_image(capture);
-                if (image != NULL)
-                {
-                    printf(" | Ir16 res:%4dx%4d stride:%5d ",
-                        k4a_image_get_height_pixels(image),
-                        k4a_image_get_width_pixels(image),
-                        k4a_image_get_stride_bytes(image));
-                    k4a_image_release(image);
-                }
-                else
-                {
-                    printf(" | Ir16 None                       ");
-                }
-
-                // Probe for a depth16 image
-                image = k4a_capture_get_depth_image(capture);
-                if (image != NULL)
-                {
-                    printf(" | Depth16 res:%4dx%4d stride:%5d\n",
-                        k4a_image_get_height_pixels(image),
-                        k4a_image_get_width_pixels(image),
-                        k4a_image_get_stride_bytes(image));
-                    k4a_image_release(image);
-                }
-                else
-                {
-                    printf(" | Depth16 None\n");
+                    printf(" | Color None");
                 }
             }
 
@@ -316,11 +209,6 @@ public:
     Exit:
         printf("Exit\n");
         k4abt_tracker_destroy(tracker);
-
-        if (RECORDCAPTURESTOVIDEO) {
-            k4a_record_flush(toRecordTo);
-            k4a_record_close(toRecordTo);
-        }
     }
 
     float Pitch(k4a_quaternion_t quart)
@@ -451,23 +339,6 @@ public:
 
 int main()
 {
-    LARGE_INTEGER start, end, frequency;
-
-    if (RECORDTIMESTAMPS) {
-        // Check if the file is open
-        if (!outputFile.is_open()) {
-            std::cerr << "Failed to open the file." << std::endl;
-            return 1; // Return an error code
-        }        
-        
-        // Get the frequency of the performance counter
-        QueryPerformanceFrequency(&frequency);
-
-        // Start the timer
-        QueryPerformanceCounter(&start);
-
-        writeToLog(start, start, frequency, -1);
-    }
 
     SOCKET socketToTransmit = NULL;
 
@@ -536,21 +407,12 @@ int main()
         WSACleanup();
     }
 
+
     // Stop and close the devices when done
     for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
         
         k4a_device_stop_cameras(devices[devicesFoundCounter]);
         k4a_device_close(devices[devicesFoundCounter]);
-    }
-
-    if (RECORDTIMESTAMPS) {
-        // End the timer
-        QueryPerformanceCounter(&end);
-
-        writeToLog(end, start, frequency, -1);
-
-        // Close the file when done
-        outputFile.close();
     }
     return 0;
 }
