@@ -233,17 +233,22 @@ public:
                             pkt = str;
                             sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
                         }
-                        
                         if (SENDJOINTSVIATCP) {
+                            
+                            pkt = str;
+                            
                             // Broadcast message to all clients
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
                                 if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                    //send(clientSockets[i], packet.data(), packet.size(), 0);
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+
                                 }
                             }
                             LeaveCriticalSection(&cs);
                         }
+
                     }
                 }
                 // release the body frame once you finish using it
@@ -446,7 +451,6 @@ public:
 
     */
 };
-
 // Function to handle communication with the client
 DWORD WINAPI ClientHandler(LPVOID lpParam) {
     SOCKET clientSocket = (SOCKET)lpParam;
@@ -550,6 +554,7 @@ int main()
 
         socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
+
     }
 
     if (SENDJOINTSVIATCP) {
@@ -605,7 +610,12 @@ int main()
             WSACleanup();
             return 1;
         }
+
+
+
     }
+
+
 
     //worker threads
     std::vector<std::thread> workers;
