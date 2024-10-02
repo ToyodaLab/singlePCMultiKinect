@@ -25,15 +25,23 @@
 // for UDP
 #include<winsock2.h>
 #include <Ws2tcpip.h>
+#include <ws2tcpip.h> // For inet_addr and other functions
 #include "main.h"
 #pragma comment(lib,"ws2_32.lib") //Winsock Library
 
-#define BUFFERLENGTH 512	//Max length of buffer
-#define PORT 8888	//The port on which to listen for incoming data
+#define MAX_CLIENTS 10
+SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
+int clientCount = 0; // Current number of connected clients
+CRITICAL_SECTION cs; // Critical section for thread safety
+
+#define BUFFERLENGTH 2048	//Max length of buffer
+#define PORT 8844	//The port on which to listen for incoming data
+
 
 // Toggle functions
 bool OPENCAPTUREFRAMES = false;         // Open Capture Frames for debugging. typically set to false.
-bool SENDJOINTSVIAUDP = true;           // Send Joints via UDP. Sets up sockets and sends data using UDP
+bool SENDJOINTSVIAUDP = false;           // Send Joints via UDP. Sets up sockets and sends data using UDP
+bool SENDJOINTSVIATCP = true;       // Send joints via TCP
 
 // BIG TODO, MAKE TCP CONNECTION
 
@@ -41,10 +49,15 @@ bool SENDJOINTSVIAUDP = true;           // Send Joints via UDP. Sets up sockets 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
 
-const char* srcIP = "127.0.0.1";
-const char* destIP = "127.0.0.1";
-//const char* destIP = "192.168.103.98";
 
+SOCKET serverSocket, clientSocket;
+#define BUFFER_SIZE 1024
+
+const char* srcIP = "127.0.0.1";
+const char* destIP = "180.43.67.62";
+//const char* destIP = "127.0.0.1";
+//const char* destIP = "157.82.148.182";
+ 
 // Each Kinect is a JointFinder.
 class JointFinder {
 public:
@@ -53,7 +66,7 @@ public:
 
         uint32_t deviceID = deviceIndex;
 
-        int captureFrameCount = 25000;
+        int captureFrameCount = 0;
         const int32_t TIMEOUT_IN_MS = 1000;
         printf("ok");
 
@@ -88,12 +101,12 @@ public:
             printf("Body tracker initialization failed!\n");
         }
 
-        // run for defined number of frames
-        while (captureFrameCount-- > 0)
+        // run forever
+        while (1)
         {
             k4a_image_t image;
-            printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
-            
+            //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
+            captureFrameCount++;
             // start timer
             LARGE_INTEGER frequency, start, end;
 
@@ -157,7 +170,7 @@ public:
                         float thisRoll = Roll(currentJointQuaternion);
 
                         char str[BUFFERLENGTH];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %f, %f, %f, %f, %f, %f",
+                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f",
                             deviceID,
                             bodyCounter,
                             jointCounter,
@@ -170,13 +183,69 @@ public:
                             thisPitch
                         );
 
+                        int integers[4] = { 
+                            deviceID,
+                            bodyCounter,
+                            jointCounter,
+                            skeleton.joints[jointCounter].confidence_level 
+                        };
+                        float floats[6] = { 
+                            skeleton.joints[jointCounter].position.xyz.x,
+                            skeleton.joints[jointCounter].position.xyz.y,
+                            skeleton.joints[jointCounter].position.xyz.z,
+                            thisRoll,
+                            thisYaw,
+                            thisPitch
+                        };
+
                         printf(str);
-                        printf("\n");
+                        std::cout << std::endl;
+
+                        // Create a packet (byte array)
+                        std::vector<uint8_t> packet;
+
+                        // Add integer bytes
+                        for (int i = 0; i < 4; ++i) {
+                            for (int j = 0; j < sizeof(integers[i]); ++j) {
+                                packet.push_back((integers[i] >> (j * 8)) & 0xFF);
+                            }
+                        }
+
+                        // Add half-float bytes
+                        for (int i = 0; i < 6; ++i) {
+                            uint16_t halfFloat = floatToHalf(floats[i]);
+                            for (int j = 0; j < sizeof(halfFloat); ++j) {
+                                packet.push_back((halfFloat >> (j * 8)) & 0xFF);
+                            }
+                        }
+
+                        // Print byte array
+                        /*for (size_t i = 0; i < packet.size(); ++i) {
+                            std::cout << (int)packet[i] << " ";
+                        }
+                        std::cout << std::endl;*/
+
 
                         if (SENDJOINTSVIAUDP) {
                             pkt = str;
                             sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
                         }
+                        if (SENDJOINTSVIATCP) {
+                            
+                            pkt = str;
+                            
+                            // Broadcast message to all clients
+                            EnterCriticalSection(&cs);
+                            for (int i = 0; i < clientCount; i++) {
+                                if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                    //send(clientSockets[i], packet.data(), packet.size(), 0);
+                                    send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+
+                                }
+                            }
+                            LeaveCriticalSection(&cs);
+                        }
+
                     }
                 }
                 // release the body frame once you finish using it
@@ -279,6 +348,50 @@ public:
         return returnQuart;
     }
 
+    // Function to pack an int into the byte array
+    void packInt(std::vector<uint8_t>& packet, int value) {
+        uint32_t networkValue = htonl(value); // convert to network byte order (big-endian)
+        uint8_t* bytes = reinterpret_cast<uint8_t*>(&networkValue);
+        packet.insert(packet.end(), bytes, bytes + sizeof(networkValue));
+    }
+
+    // Function to pack a half-float (16-bit float) into the byte array
+    void packHalfFloat(std::vector<uint8_t>& packet, float value) {
+        uint16_t halfFloat = floatToHalf(value); // Convert float to half-float (16-bit)
+        uint8_t* bytes = reinterpret_cast<uint8_t*>(&halfFloat);
+        packet.insert(packet.end(), bytes, bytes + sizeof(halfFloat)); // Append to packet
+    }
+
+    uint16_t floatToHalf(float value) {
+        uint32_t floatBits = *(uint32_t*)&value; // Get the float bits
+        uint32_t sign = (floatBits >> 16) & 0x8000; // Get sign bit
+        uint32_t exponent = (floatBits >> 23) & 0xFF; // Get exponent bits
+        uint32_t mantissa = floatBits & 0x7FFFFF; // Get mantissa bits
+
+        // Handle special cases
+        if (exponent == 255) { // NaN or infinity
+            return sign | 0x7FFF; // Return half-float NaN
+        }
+        if (exponent == 0) { // Zero or denormalized number
+            return sign; // Return zero or signed zero
+        }
+
+        // Adjust exponent for half-float
+        exponent -= 112; // 127 - 15
+        if (exponent >= 31) { // Too large for half-float
+            return sign | 0x7C00; // Set as infinity
+        }
+        if (exponent <= 0) { // Too small for half-float
+            if (exponent < -10) return sign; // Too small to be represented
+            mantissa |= 0x800000; // Implicit leading bit
+            int shift = 14 - exponent; // Calculate shift
+            mantissa >>= shift; // Shift to fit into half-float
+            return sign | (uint16_t)(mantissa);
+        }
+
+        mantissa >>= 13; // Scale down mantissa
+        return sign | (exponent << 10) | (uint16_t)(mantissa);
+    }
     /*
     k4a_quaternion_t getInverseQuaternion(int jointNumber) {
         switch (jointNumber) {
@@ -335,11 +448,92 @@ public:
 
     */
 };
+// Function to handle communication with the client
+DWORD WINAPI ClientHandler(LPVOID lpParam) {
+    SOCKET clientSocket = (SOCKET)lpParam;
+    char buffer[BUFFER_SIZE];
 
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
+        int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+        if (bytesReceived == SOCKET_ERROR) {
+            fprintf(stderr, "Receive failed: %d\n", WSAGetLastError());
+            break;
+        }
+        else if (bytesReceived == 0) {
+            printf("Client disconnected.\n");
+            break;
+        }
+
+        // Print received message
+        printf("Received: %s\n", buffer);
+
+        // Broadcast message to all clients
+        EnterCriticalSection(&cs);
+        for (int i = 0; i < clientCount; i++) {
+            if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                send(clientSockets[i], buffer, bytesReceived, 0);
+            }
+        }
+        LeaveCriticalSection(&cs);
+    }
+
+    // Remove the client socket from the list and close it
+    EnterCriticalSection(&cs);
+    for (int i = 0; i < clientCount; i++) {
+        if (clientSockets[i] == clientSocket) {
+            clientSockets[i] = clientSockets[--clientCount]; // Replace with last client
+            break;
+        }
+    }
+    LeaveCriticalSection(&cs);
+
+    closesocket(clientSocket);
+    return 0;
+}
+// Function to accept incoming connections in a separate thread
+DWORD WINAPI AcceptConnections(LPVOID lpParam) {
+    SOCKET serverSocket = (SOCKET)lpParam;
+    SOCKET clientSocket;
+    struct sockaddr_in clientAddr;
+    int addrLen = sizeof(clientAddr);
+
+    while (1) {
+        clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen);
+        if (clientSocket == INVALID_SOCKET) {
+            fprintf(stderr, "Accept failed: %d\n", WSAGetLastError());
+            continue; // Continue accepting other clients
+        }
+
+        printf("Client connected!\n");
+
+        // Add the client socket to the list
+        EnterCriticalSection(&cs);
+        if (clientCount < MAX_CLIENTS) {
+            clientSockets[clientCount++] = clientSocket; // Add the new client
+        }
+        else {
+            printf("Max clients reached. Connection refused.\n");
+            closesocket(clientSocket); // Reject connection
+        }
+        LeaveCriticalSection(&cs);
+
+        // Create a thread to handle the client
+        HANDLE threadHandle = CreateThread(NULL, 0, ClientHandler, (LPVOID)clientSocket, 0, NULL);
+        if (threadHandle == NULL) {
+            fprintf(stderr, "Failed to create thread: %d\n", GetLastError());
+            closesocket(clientSocket); // Close the socket if thread creation failed
+        }
+        else {
+            CloseHandle(threadHandle); // Close the thread handle in the main thread
+        }
+    }
+
+    return 0;
+}
 
 int main()
 {
-
     SOCKET socketToTransmit = NULL;
 
     if (SENDJOINTSVIAUDP) {
@@ -359,6 +553,66 @@ int main()
         bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
 
     }
+
+    if (SENDJOINTSVIATCP) {
+        WSADATA wsaData;
+        SOCKET serverSocket;
+        struct sockaddr_in serverAddr;
+
+        // Initialize Winsock
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            fprintf(stderr, "WSAStartup failed: %d\n", WSAGetLastError());
+            return 1;
+        }
+
+        // Create a critical section for thread safety
+        InitializeCriticalSection(&cs);
+
+        // Create a socket
+        serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+        if (serverSocket == INVALID_SOCKET) {
+            fprintf(stderr, "Socket creation failed: %d\n", WSAGetLastError());
+            WSACleanup();
+            return 1;
+        }
+
+        // Define server address
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
+        serverAddr.sin_port = htons(PORT); // Port number
+
+        // Bind the socket
+        if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+            fprintf(stderr, "Bind failed: %d\n", WSAGetLastError());
+            closesocket(serverSocket);
+            WSACleanup();
+            return 1;
+        }
+
+        // Start listening for incoming connections
+        if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
+            fprintf(stderr, "Listen failed: %d\n", WSAGetLastError());
+            closesocket(serverSocket);
+            WSACleanup();
+            return 1;
+        }
+
+        printf("Server is listening on port %d...\n", PORT);
+
+        // Create a thread to accept incoming connections
+        HANDLE acceptThread = CreateThread(NULL, 0, AcceptConnections, (LPVOID)serverSocket, 0, NULL);
+        if (acceptThread == NULL) {
+            fprintf(stderr, "Failed to create accept thread: %d\n", GetLastError());
+            closesocket(serverSocket);
+            WSACleanup();
+            return 1;
+        }
+
+
+
+    }
+
+
 
     //worker threads
     std::vector<std::thread> workers;
@@ -401,12 +655,20 @@ int main()
         }
     }
 
+
+
     if (SENDJOINTSVIAUDP) {
         // Stop and close the socket when done
         closesocket(socketToTransmit);
         WSACleanup();
     }
 
+    if (SENDJOINTSVIATCP) {
+        // Close sockets and clean up
+        DeleteCriticalSection(&cs);
+        closesocket(serverSocket);
+        WSACleanup();
+    }
 
     // Stop and close the devices when done
     for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
@@ -414,6 +676,6 @@ int main()
         k4a_device_stop_cameras(devices[devicesFoundCounter]);
         k4a_device_close(devices[devicesFoundCounter]);
     }
-    return 0;
+
 }
 
