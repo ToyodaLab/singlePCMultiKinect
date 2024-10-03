@@ -37,6 +37,11 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 #define BUFFERLENGTH 2048	//Max length of buffer
 #define PORT 8844	//The port on which to listen for incoming data
 
+#define RED   "\x1B[31m"
+#define GRN   "\x1B[32m"
+#define YEL   "\x1B[33m"
+#define MAG   "\x1B[35m"
+#define RESET "\x1B[0m"
 
 // Toggle functions
 bool OPENCAPTUREFRAMES = false;         // Open Capture Frames for debugging. typically set to false.
@@ -151,6 +156,7 @@ public:
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
+
                         // create simple quaternion
                         k4a_quaternion_t currentJointQuaternion;
                         currentJointQuaternion.wxyz.w = skeleton.joints[jointCounter].orientation.wxyz.w;
@@ -199,6 +205,7 @@ public:
                         };
 
                         // Only print first joint
+                        
                         if (jointCounter == 0) {
                             printf(str);
                             std::cout << std::endl;
@@ -239,6 +246,7 @@ public:
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
                                 if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                    //ONLY SEND IF CONFIDENT
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
                                 }
                             }
@@ -460,7 +468,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
             break;
         }
         else if (bytesReceived == 0) {
-            printf("Client disconnected.\n");
+            printf(RED "Client disconnected.\n" RESET);
             break;
         }
 
@@ -512,7 +520,7 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
             clientSockets[clientCount++] = clientSocket; // Add the new client
         }
         else {
-            printf("Max clients reached. Connection refused.\n");
+            printf(RED "Max clients reached. Connection refused.\n" RESET);
             closesocket(clientSocket); // Reject connection
         }
         LeaveCriticalSection(&cs);
@@ -527,7 +535,6 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
             CloseHandle(threadHandle); // Close the thread handle in the main thread
         }
     }
-
     return 0;
 }
 
@@ -647,8 +654,6 @@ int main()
             while (1);
         }
     }
-
-
 
     if (SENDJOINTSVIAUDP) {
         // Stop and close the socket when done
