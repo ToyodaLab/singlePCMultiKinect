@@ -143,7 +143,7 @@ public:
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
                 // Successfully found a body tracking frame
-                printf("Frame: %d: ", captureFrameCount);
+                printf("Cam: %d Frame: %d: ",deviceID, captureFrameCount);
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
 
                 // for each found body
@@ -299,7 +299,7 @@ public:
     float Yaw(k4a_quaternion_t quart)
     {
         double value = +2.0 * (quart.wxyz.w * quart.wxyz.y - quart.wxyz.z * quart.wxyz.x);
-        value = value > 1.0 ? 1.0 : value;
+        value = value > 1.0 ? 1.0 : value; 
         value = value < -1.0 ? -1.0 : value;
 
         float pitch = asin(value);
@@ -464,11 +464,11 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
         int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
         if (bytesReceived == SOCKET_ERROR) {
-            fprintf(stderr, "Receive failed: %d\n", WSAGetLastError());
+            fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
             break;
         }
         else if (bytesReceived == 0) {
-            printf(RED "Client disconnected.\n" RESET);
+            printf(RED "\nClient disconnected.\n" RESET);
             break;
         }
 
@@ -512,7 +512,7 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
             continue; // Continue accepting other clients
         }
 
-        printf("%sClient connected!%s\n", "\033[32m", "\033[0m");
+        printf("\n%sClient connected!%s\n", "\033[32m", "\033[0m");
 
         // Add the client socket to the list
         EnterCriticalSection(&cs);
@@ -520,7 +520,7 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
             clientSockets[clientCount++] = clientSocket; // Add the new client
         }
         else {
-            printf(RED "Max clients reached. Connection refused.\n" RESET);
+            printf(RED "\nMax clients reached. Connection refused.\n" RESET);
             closesocket(clientSocket); // Reject connection
         }
         LeaveCriticalSection(&cs);
