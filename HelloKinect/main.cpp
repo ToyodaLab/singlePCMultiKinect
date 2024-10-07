@@ -44,12 +44,14 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 #define RESET "\x1B[0m"
 
 // Toggle functions
-bool OPENCAPTUREFRAMES = false;         // Open Capture Frames for debugging. typically set to false.
-bool SENDJOINTSVIAUDP = false;           // Send Joints via UDP. Sets up sockets and sends data using UDP
+bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
+bool SENDJOINTSVIAUDP = false;      // Send Joints via UDP. Sets up sockets and sends data using UDP
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
+bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
 
-// BIG TODO, MAKE TCP CONNECTION
-
+//File to write to
+std::ofstream outputFile("C:\\Temp\\output.txt");
+std::string textToWrite = "";
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
@@ -63,6 +65,33 @@ const char* destIP = "180.43.67.62";
 //const char* destIP = "127.0.0.1";
 //const char* destIP = "157.82.148.182";
  
+
+void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency, const int32_t deviceID)
+{
+    // Stop the timer
+    QueryPerformanceCounter(&end);
+
+    // Calculate the elapsed time in microseconds
+    double elapsedMicroseconds = static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1e6;
+    // Print the elapsed time
+    //printf("%.2lf\n", elapsedMicroseconds);
+
+    // Convert the variable to a string 
+    char variableStrForms[20]; // Buffer to hold the string representation of the number
+    snprintf(variableStrForms, sizeof(variableStrForms), "%d", deviceID); // Convert the number to a string
+
+    textToWrite += variableStrForms;    // Write the text to the file
+    textToWrite += ",";    // Write the text to the file
+
+    snprintf(variableStrForms, sizeof(variableStrForms), "%.2lf", elapsedMicroseconds); // Convert the number to a string
+
+    textToWrite += variableStrForms;    // Write the text to the file
+    textToWrite += "\n";    // Write the text to the file
+    // uncomment to print to textfile
+    outputFile << textToWrite;
+    textToWrite = "";
+}
+
 // Each Kinect is a JointFinder.
 class JointFinder {
 public:
@@ -114,6 +143,14 @@ public:
             captureFrameCount++;
             // start timer
             LARGE_INTEGER frequency, start, end;
+
+            if (RECORDTIMESTAMPS) {
+                // Get the frequency of the performance counter
+                QueryPerformanceFrequency(&frequency);
+
+                // Start the timer
+                QueryPerformanceCounter(&start);
+            }
 
             // Get a depth frame
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
@@ -256,6 +293,14 @@ public:
                 }
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
+
+                if (RECORDTIMESTAMPS) {
+                    // Stop the timer
+                    QueryPerformanceCounter(&end);
+
+                    writeToLog(end, start, frequency, deviceID);
+                }
+
             }
 
             if (OPENCAPTUREFRAMES)
@@ -540,6 +585,25 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
 
 int main()
 {
+
+    LARGE_INTEGER start, end, frequency;
+
+    if (RECORDTIMESTAMPS) {
+        // Check if the file is open
+        if (!outputFile.is_open()) {
+            std::cerr << "Failed to open the file." << std::endl;
+            return 1; // Return an error code
+        }
+
+        // Get the frequency of the performance counter
+        QueryPerformanceFrequency(&frequency);
+
+        // Start the timer
+        QueryPerformanceCounter(&start);
+
+        writeToLog(start, start, frequency, -1);
+    }
+
     SOCKET socketToTransmit = NULL;
 
     if (SENDJOINTSVIAUDP) {
@@ -673,6 +737,11 @@ int main()
         
         k4a_device_stop_cameras(devices[devicesFoundCounter]);
         k4a_device_close(devices[devicesFoundCounter]);
+    }
+
+    if (RECORDTIMESTAMPS) {
+        // Close the file when done
+        outputFile.close();
     }
 
 }
