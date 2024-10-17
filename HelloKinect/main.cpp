@@ -5,21 +5,28 @@
 #include <iostream>
 #include <map>
 #include <vector>
+#include <thread>
+#include <string>
+
+
+// For Kinect stuff
 #include <k4arecord/playback.h>
 #include <k4a/k4a.h>
 #include <k4abt.h>
-#include <thread>
 #include <k4arecord/k4arecord_export.h>
-
 #include <k4arecord/record.h>
 #include <k4arecord/types.h>
 
+// For string handling
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 // for file operations
-#include <fstream> 
+#include <fstream>
+
+// For timestamps
+#include <chrono>
 
 
 // for UDP
@@ -51,7 +58,6 @@ bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
 
 //File to write to
 std::ofstream outputFile("C:\\Temp\\output.txt");
-std::string textToWrite = "";
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
@@ -66,30 +72,25 @@ const char* destIP = "180.43.67.62";
 //const char* destIP = "157.82.148.182";
  
 
-void writeToLog(LARGE_INTEGER end, LARGE_INTEGER start, LARGE_INTEGER frequency, const int32_t deviceID)
+void writeToLog(char* topic)
 {
-    // Stop the timer
-    QueryPerformanceCounter(&end);
+    // Get the current time
+    auto currentTime = std::chrono::system_clock::now();
 
-    // Calculate the elapsed time in microseconds
-    double elapsedMicroseconds = static_cast<double>(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1e6;
-    // Print the elapsed time
-    //printf("%.2lf\n", elapsedMicroseconds);
+    // Get time since epoch in microseconds
+    auto durationMicros = std::chrono::duration_cast<std::chrono::microseconds>(currentTime.time_since_epoch());
 
-    // Convert the variable to a string 
-    char variableStrForms[20]; // Buffer to hold the string representation of the number
-    snprintf(variableStrForms, sizeof(variableStrForms), "%d", deviceID); // Convert the number to a string
+    // Create a char buffer to store the microseconds as a string
+    char nowbuffer[50];  // Adjust size depending on expected length
 
-    textToWrite += variableStrForms;    // Write the text to the file
-    textToWrite += ",";    // Write the text to the file
+    // Convert the microseconds value to a C-style string
+    snprintf(nowbuffer, sizeof(nowbuffer), "%lld", durationMicros.count());
 
-    snprintf(variableStrForms, sizeof(variableStrForms), "%.2lf", elapsedMicroseconds); // Convert the number to a string
+    // Output the C-style string representation of the timestamp in microseconds
+    std::cout << nowbuffer << "\n";
 
-    textToWrite += variableStrForms;    // Write the text to the file
-    textToWrite += "\n";    // Write the text to the file
-    // uncomment to print to textfile
-    outputFile << textToWrite;
-    textToWrite = "";
+    // Print to the text file / log
+    outputFile << *nowbuffer + "\n";
 }
 
 // Each Kinect is a JointFinder.
@@ -141,16 +142,6 @@ public:
             k4a_image_t image;
             //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
             captureFrameCount++;
-            // start timer
-            LARGE_INTEGER frequency, start, end;
-
-            if (RECORDTIMESTAMPS) {
-                // Get the frequency of the performance counter
-                QueryPerformanceFrequency(&frequency);
-
-                // Start the timer
-                QueryPerformanceCounter(&start);
-            }
 
             // Get a depth frame
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
@@ -244,8 +235,8 @@ public:
                         // Only print first joint
                         
                         if (jointCounter == 0) {
-                            printf(str);
-                            std::cout << std::endl;
+                            //printf(str);
+                            //std::cout << std::endl;
                         }
 
                         // Create a packet (byte array)
@@ -267,10 +258,10 @@ public:
                         }
 
                         // Print byte array
-                        /*for (size_t i = 0; i < packet.size(); ++i) {
+                        for (size_t i = 0; i < packet.size(); ++i) {
                             std::cout << (int)packet[i] << " ";
                         }
-                        std::cout << std::endl;*/
+                        std::cout << std::endl;
 
 
                         if (SENDJOINTSVIAUDP) {
@@ -283,24 +274,24 @@ public:
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
                                 if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                    //ONLY SEND IF CONFIDENT
+                                    
+                                    //Todo: ONLY SEND IF CONFIDENT
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
                                 }
                             }
+
+
                             LeaveCriticalSection(&cs);
                         }
                     }
+                    if (RECORDTIMESTAMPS) {
+                        char eventText[] = "foundSkeleton";
+                        writeToLog(eventText);
+                    }
                 }
+
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
-
-                if (RECORDTIMESTAMPS) {
-                    // Stop the timer
-                    QueryPerformanceCounter(&end);
-
-                    writeToLog(end, start, frequency, deviceID);
-                }
-
             }
 
             if (OPENCAPTUREFRAMES)
@@ -585,23 +576,12 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
 
 int main()
 {
-
-    LARGE_INTEGER start, end, frequency;
-
     if (RECORDTIMESTAMPS) {
         // Check if the file is open
         if (!outputFile.is_open()) {
             std::cerr << "Failed to open the file." << std::endl;
             return 1; // Return an error code
         }
-
-        // Get the frequency of the performance counter
-        QueryPerformanceFrequency(&frequency);
-
-        // Start the timer
-        QueryPerformanceCounter(&start);
-
-        writeToLog(start, start, frequency, -1);
     }
 
     SOCKET socketToTransmit = NULL;
@@ -649,7 +629,7 @@ int main()
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
         serverAddr.sin_port = htons(PORT); // Port number
-
+        
         // Bind the socket
         if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
             fprintf(stderr, "Bind failed: %d\n", WSAGetLastError());
