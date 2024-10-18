@@ -175,37 +175,15 @@ public:
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
-
-                        // create simple quaternion
-                        k4a_quaternion_t currentJointQuaternion;
-                        currentJointQuaternion.wxyz.w = skeleton.joints[jointCounter].orientation.wxyz.w;
-                        currentJointQuaternion.wxyz.x = skeleton.joints[jointCounter].orientation.wxyz.x;
-                        currentJointQuaternion.wxyz.y = skeleton.joints[jointCounter].orientation.wxyz.y;
-                        currentJointQuaternion.wxyz.z = skeleton.joints[jointCounter].orientation.wxyz.z;
-
-                        // change coordinate system via rotation around axis
-                        // TODO change this transform depending on joint using getInverseQuaternion
-                        k4a_quaternion_t transformedQuart = AngleAxis(90, currentJointQuaternion);
-
-                        transformedQuart = multiplyQuaternion(skeleton.joints[jointCounter].orientation, currentJointQuaternion);
-
-                        // convert quaternion to rotator
-                        float thisPitch = Pitch(currentJointQuaternion);
-                        float thisYaw = Yaw(currentJointQuaternion);
-                        float thisRoll = Roll(currentJointQuaternion);
-
                         char str[BUFFERLENGTH];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f",
+                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %.2f, %.2f, %.2f",
                             deviceID,
                             bodyCounter,
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level,
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z,
-                            thisRoll, 
-                            thisYaw, 
-                            thisPitch
+                            skeleton.joints[jointCounter].position.xyz.z
                         );
 
                         int integers[4] = { 
@@ -214,13 +192,10 @@ public:
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level 
                         };
-                        float floats[6] = { 
+                        float floats[3] = { 
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z,
-                            thisRoll,
-                            thisYaw,
-                            thisPitch
+                            skeleton.joints[jointCounter].position.xyz.z
                         };
 
                         // Only print first joint
@@ -241,7 +216,7 @@ public:
                         }
 
                         // Add half-float bytes
-                        for (int i = 0; i < 6; ++i) {
+                        for (int i = 0; i < 3; ++i) {
                             uint16_t halfFloat = floatToHalf(floats[i]);
                             for (int j = 0; j < sizeof(halfFloat); ++j) {
                                 packet.push_back((halfFloat >> (j * 8)) & 0xFF);
@@ -253,7 +228,6 @@ public:
                             std::cout << (int)packet[i] << " ";
                         }
                         std::cout << std::endl;*/
-
 
                         if (SENDJOINTSVIAUDP) {
                             pkt = str;
@@ -308,74 +282,6 @@ public:
     Exit:
         printf("Exit\n");
         k4abt_tracker_destroy(tracker);
-    }
-
-    float Pitch(k4a_quaternion_t quart)
-    {
-        float value1 = 2.0 * (quart.wxyz.w * quart.wxyz.x + quart.wxyz.y * quart.wxyz.z);
-        float value2 = 1.0 - 2.0 * (quart.wxyz.x * quart.wxyz.x + quart.wxyz.y * quart.wxyz.y);
-
-        float roll = atan2(value1, value2);
-
-        return roll * (180.0 / 3.141592653589793116);
-    }
-
-    float Yaw(k4a_quaternion_t quart)
-    {
-        double value = +2.0 * (quart.wxyz.w * quart.wxyz.y - quart.wxyz.z * quart.wxyz.x);
-        value = value > 1.0 ? 1.0 : value; 
-        value = value < -1.0 ? -1.0 : value;
-
-        float pitch = asin(value);
-
-        return pitch * (180.0 / 3.141592653589793116);
-    }
-
-    float Roll(k4a_quaternion_t quart)
-    {
-        float value1 = 2.0 * (quart.wxyz.w * quart.wxyz.z + quart.wxyz.x * quart.wxyz.y);
-        float value2 = 1.0 - 2.0 * (quart.wxyz.y * quart.wxyz.y + quart.wxyz.z * quart.wxyz.z);
-
-        float yaw = atan2(value1, value2);
-
-        return yaw * (180.0 / 3.141592653589793116);
-    }
-
-    k4a_quaternion_t AngleAxis(float angle, k4a_quaternion_t axis) {
-
-        // First normalise the axis
-        float x, y, z;
-        x = axis.wxyz.x; y = axis.wxyz.y; z = axis.wxyz.z;
-        float magnitude = std::sqrt(x * x + y * y + z * z);
-
-        // Check if the magnitude is not zero to avoid division by zero
-        if (magnitude != 0) {
-            x /= magnitude;
-            y /= magnitude;
-            z /= magnitude;
-        }
-
-        angle *= 0.0174532925f; // To radians!
-        angle *= 0.5f;
-        float sinAngle = sin(angle);
-
-        // create and return the quaternion
-        k4a_quaternion_t returnQuart;
-        returnQuart.wxyz.w = cos(angle);
-        returnQuart.wxyz.x = x * sinAngle;
-        returnQuart.wxyz.y = y * sinAngle;
-        returnQuart.wxyz.z = z * sinAngle;
-
-        return returnQuart;
-    }
-
-    k4a_quaternion_t multiplyQuaternion(k4a_quaternion_t first, k4a_quaternion_t second) {
-        k4a_quaternion_t returnQuart;
-        returnQuart.wxyz.w = first.wxyz.w * second.wxyz.w - first.wxyz.x * second.wxyz.x - first.wxyz.y * second.wxyz.y - first.wxyz.z * second.wxyz.z;
-        returnQuart.wxyz.x = first.wxyz.w * second.wxyz.x + first.wxyz.x * second.wxyz.w + first.wxyz.y * second.wxyz.z - first.wxyz.z * second.wxyz.y;
-        returnQuart.wxyz.y = first.wxyz.w * second.wxyz.y - first.wxyz.x * second.wxyz.z + first.wxyz.y * second.wxyz.w + first.wxyz.z * second.wxyz.x;
-        returnQuart.wxyz.z = first.wxyz.w * second.wxyz.z + first.wxyz.x * second.wxyz.y - first.wxyz.y * second.wxyz.x + first.wxyz.z * second.wxyz.w;
-        return returnQuart;
     }
 
     // Function to pack an int into the byte array
