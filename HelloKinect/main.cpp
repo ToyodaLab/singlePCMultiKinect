@@ -72,25 +72,17 @@ const char* destIP = "180.43.67.62";
 //const char* destIP = "157.82.148.182";
  
 
-void writeToLog(char* topic)
+void writeToLog(std::string& topic)
 {
     // Get the current time
     auto currentTime = std::chrono::system_clock::now();
 
-    // Get time since epoch in microseconds
+    // Get time since epoch in microseconds and convert to string
     auto durationMicros = std::chrono::duration_cast<std::chrono::microseconds>(currentTime.time_since_epoch());
-
-    // Create a char buffer to store the microseconds as a string
-    char nowbuffer[50];  // Adjust size depending on expected length
-
-    // Convert the microseconds value to a C-style string
-    snprintf(nowbuffer, sizeof(nowbuffer), "%lld", durationMicros.count());
-
-    // Output the C-style string representation of the timestamp in microseconds
-    std::cout << nowbuffer << "\n";
+    std::string duractionMicroAsString = std::to_string(durationMicros.count());
 
     // Print to the text file / log
-    outputFile << *nowbuffer + "\n";
+    outputFile << topic + duractionMicroAsString + "\n";
 }
 
 // Each Kinect is a JointFinder.
@@ -117,10 +109,9 @@ public:
         // Start capturing from the device
         if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED)
         {
-            std::cerr << "Failed to start capturing from the Kinect Azure device" << std::endl;
+            printf("Failed to start capturing from the Kinect Azure device");
         }
          
-
         // setup sensor calibration
         k4a_calibration_t sensor_calibration;
         if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(openedDevice, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &sensor_calibration))
@@ -235,8 +226,8 @@ public:
                         // Only print first joint
                         
                         if (jointCounter == 0) {
-                            //printf(str);
-                            //std::cout << std::endl;
+                            printf(str);
+                            std::cout << std::endl;
                         }
 
                         // Create a packet (byte array)
@@ -258,10 +249,10 @@ public:
                         }
 
                         // Print byte array
-                        for (size_t i = 0; i < packet.size(); ++i) {
+                        /*for (size_t i = 0; i < packet.size(); ++i) {
                             std::cout << (int)packet[i] << " ";
                         }
-                        std::cout << std::endl;
+                        std::cout << std::endl;*/
 
 
                         if (SENDJOINTSVIAUDP) {
@@ -274,18 +265,15 @@ public:
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
                                 if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                    
                                     //Todo: ONLY SEND IF CONFIDENT
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
                                 }
                             }
-
-
                             LeaveCriticalSection(&cs);
                         }
                     }
                     if (RECORDTIMESTAMPS) {
-                        char eventText[] = "foundSkeleton";
+                        std::string eventText = "Cam" + std::to_string(deviceID) + ",";
                         writeToLog(eventText);
                     }
                 }
