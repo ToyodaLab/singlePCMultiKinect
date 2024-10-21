@@ -95,13 +95,11 @@ public:
 
         int captureFrameCount = 0;
         const int32_t TIMEOUT_IN_MS = 1000;
-        printf("ok");
-
         k4a_capture_t capture = NULL;
 
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_15; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
         config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
@@ -199,7 +197,6 @@ public:
                         };
 
                         // Only print first joint
-                        
                         if (jointCounter == 0) {
                             printf(str);
                             std::cout << std::endl;
@@ -328,61 +325,6 @@ public:
         mantissa >>= 13; // Scale down mantissa
         return sign | (exponent << 10) | (uint16_t)(mantissa);
     }
-    /*
-    k4a_quaternion_t getInverseQuaternion(int jointNumber) {
-        switch (jointNumber) {
-        case 0:	    //  PELVIS
-        case 1:	    //	SPINE_NAVAL
-        case 2:	    //	SPINE_CHEST
-        case 3:	    //	NECK
-        case 26:	//	HEAD
-        case 18:	//	HIP_LEFT
-        case 19:	//	KNEE_LEFT
-        case 20:	//	ANKLE_LEFT
-            //quart newAxis(0, 1, 0, 0);
-            //quart newAxis2(0, 0, 0, 1);
-            //newAxis = AngleAxis(90, newAxis) * AngleAxis(-90, newAxis);
-
-        case 21:	//	FOOT_LEFT
-
-        case 22:	//	HIP_RIGHT
-        case 23:	//	KNEE_RIGHT
-        case 24:	//	ANKLE_RIGHT
-
-        case 25:	//	FOOT_RIGHT
-
-        case 4:	    //	CLAVICLE_LEFT
-        case 5:	    //	SHOULDER_LEFT
-        case 6:	    //	ELBOW_LEFT
-
-        case 7:	    //	WRIST_LEFT
-
-        case 11:	//	CLAVICLE_RIGHT
-        case 12:	//	SHOULDER_RIGHT
-        case 13:	//	ELBOW_RIGHT
-
-
-        case 14:	//	WRIST_RIGHT
-
-
-        case 8:	    //	HAND_LEFT
-        case 9:	    //	HANDTIP_LEFT
-        case 10:	//	THUMB_LEFT
-        case 15:	//	HAND_RIGHT
-        case 16:	//	HANDTIP_RIGHT
-        case 17:	//	THUMB_RIGHT
-        case 27:	//	NOSE
-        case 28:	//	EYE_LEFT
-        case 29:	//	EAR_LEFT
-        case 30:	//	EYE_RIGHT
-        case 31:	//	EAR_RIGHT
-        default:
-            //quart newQ(1,0,0,0);
-        }
-        k4a_quaternion_t quartToReturn;
-    }
-
-    */
 };
 
 // Function to handle communication with the client
@@ -555,15 +497,11 @@ int main()
     //worker threads
     std::vector<std::thread> workers;
 
+    // Find number of devices and initialise as nullptr
     uint32_t device_count = k4a_device_get_installed_count();
-
-    //Force number of devices For Debugging 
-    //device_count = 4;
-
     printf("Found %d connected devices:\n", device_count);
+    std::vector<k4a_device_t> devices(device_count, { nullptr });  
 
-    // Max devices is 4 (arbritrary)
-    k4a_device_t devices[4] = { nullptr,nullptr,nullptr,nullptr };
 
     for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
         if (k4a_device_open(devicesFoundCounter, &devices[devicesFoundCounter]) != K4A_RESULT_SUCCEEDED)
