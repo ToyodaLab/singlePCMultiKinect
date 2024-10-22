@@ -54,10 +54,10 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
 bool SENDJOINTSVIAUDP = false;      // Send Joints via UDP. Sets up sockets and sends data using UDP
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
-bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
+bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
 
 //File to write to
-std::ofstream outputFile("C:\\Temp\\output.txt");
+std::ofstream outputFile("C:\\Temp\\KinectLog.txt");
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
@@ -78,11 +78,12 @@ void writeToLog(std::string& topic)
     auto currentTime = std::chrono::system_clock::now();
 
     // Get time since epoch in microseconds and convert to string
-    auto durationMicros = std::chrono::duration_cast<std::chrono::microseconds>(currentTime.time_since_epoch());
-    std::string duractionMicroAsString = std::to_string(durationMicros.count());
+    auto durationMillis = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime.time_since_epoch());
+
+    std::string duractionMilliAsString = std::to_string(durationMillis.count());
 
     // Print to the text file / log
-    outputFile << topic + duractionMicroAsString + "\n";
+    outputFile << topic + "," + duractionMilliAsString + "\n";
 }
 
 // Each Kinect is a JointFinder.
@@ -99,10 +100,11 @@ public:
 
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_15; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
-        config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
+        //config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
+        config.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
 
         // Start capturing from the device
         if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED)
@@ -132,6 +134,11 @@ public:
             //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
             captureFrameCount++;
 
+            if (RECORDTIMESTAMPS) {
+                std::string eventText = "A,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                writeToLog(eventText);
+            }
+
             // Get a depth frame
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
             {
@@ -147,7 +154,8 @@ public:
             }
 
             // get capture to tracker
-            k4a_wait_result_t queue_capture_result = k4abt_tracker_enqueue_capture(tracker, capture, 0);
+            k4a_wait_result_t queue_capture_result = k4abt_tracker_enqueue_capture(tracker, capture, K4A_WAIT_INFINITE);
+            //k4a_wait_result_t queue_capture_result = k4abt_tracker_enqueue_capture(tracker, capture, 0); // Was set to 0
             if (queue_capture_result == K4A_WAIT_RESULT_FAILED)
             {
                 printf("Error! Adding capture to tracker process queue failed!\n");
@@ -156,11 +164,17 @@ public:
 
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
-            k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0);
+
+            k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, K4A_WAIT_INFINITE);
+            //k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0); // Was set to 0
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
+                if (RECORDTIMESTAMPS) {
+                    std::string eventText = "B,Cam" + std::to_string(deviceID) + " , " + std::to_string(captureFrameCount);
+                    writeToLog(eventText);
+                }
                 // Successfully found a body tracking frame
-                printf("Cam: %d Frame: %d: ",deviceID, captureFrameCount);
+                printf("Cam: %d Frame: ",deviceID);
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
 
                 // for each found body
@@ -174,7 +188,8 @@ public:
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
                         char str[BUFFERLENGTH];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %.2f, %.2f, %.2f",
+                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
+                            captureFrameCount,
                             deviceID,
                             bodyCounter,
                             jointCounter,
@@ -184,7 +199,8 @@ public:
                             skeleton.joints[jointCounter].position.xyz.z
                         );
 
-                        int integers[4] = { 
+                        int integers[5] = { 
+                            captureFrameCount,
                             deviceID,
                             bodyCounter,
                             jointCounter,
@@ -206,7 +222,7 @@ public:
                         std::vector<uint8_t> packet;
 
                         // Add integer bytes
-                        for (int i = 0; i < 4; ++i) {
+                        for (int i = 0; i < 5; ++i) {
                             for (int j = 0; j < sizeof(integers[i]); ++j) {
                                 packet.push_back((integers[i] >> (j * 8)) & 0xFF);
                             }
@@ -227,8 +243,8 @@ public:
                         std::cout << std::endl;*/
 
                         if (SENDJOINTSVIAUDP) {
-                            pkt = str;
-                            sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
+                            //pkt = str;
+                            //sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
                         }
                         
                         if (SENDJOINTSVIATCP) {
@@ -244,7 +260,7 @@ public:
                         }
                     }
                     if (RECORDTIMESTAMPS) {
-                        std::string eventText = "Cam" + std::to_string(deviceID) + ",";
+                        std::string eventText = "C,Cam" + std::to_string(deviceID) + " , " + std::to_string(captureFrameCount);
                         writeToLog(eventText);
                     }
                 }
