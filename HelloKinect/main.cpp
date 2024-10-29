@@ -28,7 +28,6 @@
 // For timestamps
 #include <chrono>
 
-
 // for UDP
 #include<winsock2.h>
 #include <Ws2tcpip.h>
@@ -54,10 +53,10 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
 bool SENDJOINTSVIAUDP = false;      // Send Joints via UDP. Sets up sockets and sends data using UDP
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
-bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
+bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
 
 //File to write to
-std::ofstream outputFile("C:\\Temp\\KinectLog.txt");
+std::ofstream outputFile("C:\\Temp\\Experiments\\24-10-28\\KinectLog.txt");
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
@@ -170,7 +169,7 @@ public:
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
                 if (RECORDTIMESTAMPS) {
-                    std::string eventText = "B,Cam" + std::to_string(deviceID) + " , " + std::to_string(captureFrameCount);
+                    std::string eventText = "B,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
                     writeToLog(eventText);
                 }
                 // Successfully found a body tracking frame
@@ -188,7 +187,7 @@ public:
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
                         char str[BUFFERLENGTH];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
+                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f",
                             captureFrameCount,
                             deviceID,
                             bodyCounter,
@@ -196,7 +195,11 @@ public:
                             skeleton.joints[jointCounter].confidence_level,
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z
+                            skeleton.joints[jointCounter].position.xyz.z,
+                            skeleton.joints[jointCounter].orientation.wxyz.w,
+                            skeleton.joints[jointCounter].orientation.wxyz.x,
+                            skeleton.joints[jointCounter].orientation.wxyz.y,
+                            skeleton.joints[jointCounter].orientation.wxyz.z
                         );
 
                         int integers[5] = { 
@@ -206,10 +209,14 @@ public:
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level 
                         };
-                        float floats[3] = { 
+                        float floats[7] = { 
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z
+                            skeleton.joints[jointCounter].position.xyz.z,
+                            skeleton.joints[jointCounter].orientation.wxyz.w,
+                            skeleton.joints[jointCounter].orientation.wxyz.x,
+                            skeleton.joints[jointCounter].orientation.wxyz.y,
+                            skeleton.joints[jointCounter].orientation.wxyz.z
                         };
 
                         // Only print first joint
@@ -229,7 +236,7 @@ public:
                         }
 
                         // Add half-float bytes
-                        for (int i = 0; i < 3; ++i) {
+                        for (int i = 0; i < 7; ++i) {
                             uint16_t halfFloat = floatToHalf(floats[i]);
                             for (int j = 0; j < sizeof(halfFloat); ++j) {
                                 packet.push_back((halfFloat >> (j * 8)) & 0xFF);
@@ -254,17 +261,20 @@ public:
                                 if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                                     //Todo: ONLY SEND IF CONFIDENT
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+                                    if (jointCounter == 0 && RECORDTIMESTAMPS) {
+                                            std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                                            writeToLog(eventText);
+                                    }
                                 }
                             }
                             LeaveCriticalSection(&cs);
                         }
                     }
-                    if (RECORDTIMESTAMPS) {
-                        std::string eventText = "C,Cam" + std::to_string(deviceID) + " , " + std::to_string(captureFrameCount);
-                        writeToLog(eventText);
-                    }
                 }
-
+                if(RECORDTIMESTAMPS) {
+                    std::string eventText = "D,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                    writeToLog(eventText);
+                }
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
             }
