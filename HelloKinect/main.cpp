@@ -40,6 +40,9 @@ SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
 int clientCount = 0; // Current number of connected clients
 CRITICAL_SECTION cs; // Critical section for thread safety
 
+int TEMPCOUNTER = -1;
+int TEMPLIMITER = 0; // set to zero for NO LIMIT
+
 #define BUFFERLENGTH 2048	//Max length of buffer
 #define PORT 8844	//The port on which to listen for incoming data
 
@@ -172,8 +175,7 @@ public:
                     std::string eventText = "B,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
                     writeToLog(eventText);
                 }
-                // Successfully found a body tracking frame
-                printf("Cam: %d Frame: ",deviceID);
+                // Successfully found a body tracking frame 
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
 
                 // for each found body
@@ -182,6 +184,9 @@ public:
                     k4abt_skeleton_t skeleton;
                     k4abt_frame_get_body_skeleton(body_frame, bodyCounter, &skeleton);
                     uint32_t id = k4abt_frame_get_body_id(body_frame, bodyCounter);
+
+                    // Create a packet for whole skeleton (byte array)
+                    std::vector<uint8_t> packet;
 
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
@@ -193,6 +198,7 @@ public:
                             bodyCounter,
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level,
+
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
                             skeleton.joints[jointCounter].position.xyz.z,
@@ -219,15 +225,6 @@ public:
                             skeleton.joints[jointCounter].orientation.wxyz.z
                         };
 
-                        // Only print first joint
-                        if (jointCounter == 0) {
-                            printf(str);
-                            std::cout << std::endl;
-                        }
-
-                        // Create a packet (byte array)
-                        std::vector<uint8_t> packet;
-
                         // Add integer bytes
                         for (int i = 0; i < 5; ++i) {
                             for (int j = 0; j < sizeof(integers[i]); ++j) {
@@ -243,32 +240,46 @@ public:
                             }
                         }
 
-                        // Print byte array
-                        /*for (size_t i = 0; i < packet.size(); ++i) {
-                            std::cout << (int)packet[i] << " ";
+                        if (TEMPCOUNTER == -1) {
+                            // Only print first joint
+                            if (jointCounter == 0) {
+                                printf(str);
+                                std::cout << std::endl;
+                            }
                         }
-                        std::cout << std::endl;*/
+                        else {
+                            if (jointCounter == 0) {
+                                printf(".");
+                            }
+                        }
 
-                        if (SENDJOINTSVIAUDP) {
-                            //pkt = str;
-                            //sendto(boundSocket, pkt, BUFFERLENGTH, 0, (sockaddr*)&dest, sizeof(dest));
-                        }
-                        
+                        // Print byte array
+                        //for (size_t i = 0; i < packet.size(); ++i) {
+                        //    std::cout << (int)packet[i] << ",";
+                        //}
+                        //std::cout << std::endl;
+
+                    }
+                    TEMPCOUNTER++;
+                    if (TEMPCOUNTER >= TEMPLIMITER) {
                         if (SENDJOINTSVIATCP) {
                             // Broadcast message to all clients
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
-                                if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                    //Todo: ONLY SEND IF CONFIDENT
-                                    send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-                                    if (jointCounter == 0 && RECORDTIMESTAMPS) {
-                                            std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                                            writeToLog(eventText);
-                                    }
-                                }
+                                //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                    //Sends whole body as one packet
+
+                                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+
+                                //if (jointCounter == 0 && RECORDTIMESTAMPS) {
+                                //    std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                                //    writeToLog(eventText);
+                                //}
+                            //}
                             }
                             LeaveCriticalSection(&cs);
                         }
+                        TEMPCOUNTER = -1;
                     }
                 }
                 if(RECORDTIMESTAMPS) {
@@ -362,7 +373,8 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
         int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
         if (bytesReceived == SOCKET_ERROR) {
-            fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
+            //fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
+            printf(RED "\nReceive failed or sudden disconnect : %d\n" RESET, WSAGetLastError());
             break;
         }
         else if (bytesReceived == 0) {
