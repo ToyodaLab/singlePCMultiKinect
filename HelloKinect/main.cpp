@@ -68,10 +68,7 @@ sockaddr_in dest;
 SOCKET serverSocket, clientSocket;
 #define BUFFER_SIZE 1024
 
-const char* srcIP = "127.0.0.1";
-const char* destIP = "180.43.67.62";
-//const char* destIP = "127.0.0.1";
-//const char* destIP = "157.82.148.182";
+
  
 
 void writeToLog(std::string& topic)
@@ -372,7 +369,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
     while (1) {
         memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
         int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
-        if (bytesReceived == SOCKET_ERROR) {
+        if (bytesReceived == SOCKET_ERROR) { 
             //fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
             printf(RED "\nReceive failed or sudden disconnect : %d\n" RESET, WSAGetLastError());
             break;
@@ -386,13 +383,13 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         printf("Received: %s\n", buffer);
 
         // Broadcast message to all clients
-        EnterCriticalSection(&cs);
-        for (int i = 0; i < clientCount; i++) {
-            if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                send(clientSockets[i], buffer, bytesReceived, 0);
-            }
-        }
-        LeaveCriticalSection(&cs);
+        //EnterCriticalSection(&cs);
+        //for (int i = 0; i < clientCount; i++) {
+        //    if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+        //        send(clientSockets[i], buffer, bytesReceived, 0);
+        //    }
+        //}
+        //LeaveCriticalSection(&cs);
     }
 
     // Remove the client socket from the list and close it
@@ -461,6 +458,10 @@ int main()
     SOCKET socketToTransmit = NULL;
 
     if (SENDJOINTSVIAUDP) {
+        const char* srcIP = "127.0.0.1";
+        const char* destIP = "180.43.67.62";
+        //const char* destIP = "127.0.0.1";
+        //const char* destIP = "157.82.148.182";
         sockaddr_in local;
         WSAData data;
         WSAStartup(MAKEWORD(2, 2), &data);
