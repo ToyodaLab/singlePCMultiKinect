@@ -261,9 +261,9 @@ public:
                             for (int i = 0; i < clientCount; i++) {
                                 //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                                     //Sends whole body as one packet
+                                printf("Packet size %zd: ", packet.size());
 
                                 send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-
                                 //if (jointCounter == 0 && RECORDTIMESTAMPS) {
                                 //    std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
                                 //    writeToLog(eventText);
@@ -379,13 +379,13 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         printf("Received: %s\n", buffer);
 
         // Broadcast message to all clients
-        //EnterCriticalSection(&cs);
-        //for (int i = 0; i < clientCount; i++) {
-        //    if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-        //        send(clientSockets[i], buffer, bytesReceived, 0);
-        //    }
-        //}
-        //LeaveCriticalSection(&cs);
+        EnterCriticalSection(&cs);
+        for (int i = 0; i < clientCount; i++) {
+            if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                send(clientSockets[i], buffer, bytesReceived, 0);
+            }
+        }
+        LeaveCriticalSection(&cs);
     }
 
     // Remove the client socket from the list and close it
