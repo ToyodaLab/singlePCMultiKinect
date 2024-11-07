@@ -43,8 +43,8 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 int TEMPCOUNTER = -1;
 int TEMPLIMITER = 0; // set to zero for NO LIMIT
 
-#define BUFFERLENGTH 2048	//Max length of buffer
-#define PORT 8844	//The port on which to listen for incoming data
+#define PORT 11111	//The port on which to listen for incoming data
+//#define PORT 8844	//The port on which to listen for incoming data
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -66,10 +66,7 @@ sockaddr_in dest;
 
 
 SOCKET serverSocket, clientSocket;
-#define BUFFER_SIZE 1024
-
-
- 
+#define BUFFER_SIZE 1024 //Max length of buffer
 
 void writeToLog(std::string& topic)
 {
@@ -132,6 +129,9 @@ public:
             k4a_image_t image;
             //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
             captureFrameCount++;
+            if (captureFrameCount == 66534) {
+                captureFrameCount = 0;
+            }
 
             if (RECORDTIMESTAMPS) {
                 std::string eventText = "A,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
@@ -185,17 +185,34 @@ public:
                     // Create a packet for whole skeleton (byte array)
                     std::vector<uint8_t> packet;
 
+                    // First add EVENTID and HEADER FRAMES (reduced transmitted data)
+                    // 0 is first main event (a skeleton)
+
+                    int header[5] = {
+                            0,                  // Event ZERO (a skeleton)
+                            captureFrameCount,  // current Frame ID
+                            deviceID            // which device is it from
+                    };
+                    
+                    // Add integer bytes. Only two bytes per integer -> up to 65,535 
+                    for (int i = 0; i < 3; ++i) {
+                        // Add the lower byte first
+                        packet.push_back((header[i] >> 0) & 0xFF); // LSB
+
+                        // Add the higher byte second
+                        packet.push_back((header[i] >> 8) & 0xFF); // MSB
+                    }
+
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
-                        char str[BUFFERLENGTH];
+                        char str[BUFFER_SIZE];
                         snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
                             captureFrameCount,
                             deviceID,
                             bodyCounter,
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level,
-
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
                             skeleton.joints[jointCounter].position.xyz.z/*,
@@ -205,24 +222,27 @@ public:
                             skeleton.joints[jointCounter].orientation.wxyz.z*/
                         );
 
-                        int integers[5] = { 
-                            captureFrameCount,
-                            deviceID,
-                            bodyCounter,
+                        int integers[2] = { 
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level 
                         };
-                        float floats[7] = { 
+                        float floats[3] = { 
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
                             skeleton.joints[jointCounter].position.xyz.z
                         };
 
-                        // Add integer bytes
-                        for (int i = 0; i < 5; ++i) {
-                            for (int j = 0; j < sizeof(integers[i]); ++j) {
-                                packet.push_back((integers[i] >> (j * 8)) & 0xFF);
-                            }
+                        // Add integer bytes. Only two bytes per integer -> up to 65,535 
+                        for (int i = 0; i < 2; ++i) {
+                            // Add the lower byte first
+                            packet.push_back((integers[i] >> 0) & 0xFF); // LSB
+
+                            // Add the higher byte second
+                            packet.push_back((integers[i] >> 8) & 0xFF); // MSB
+                            //for (int j = 0; j < sizeof(integers[i]); ++j) {
+
+                            //    packet.push_back((integers[i] >> (j * 8)) & 0xFF);
+                            //}
                         }
 
                         // Add half-float bytes
@@ -374,15 +394,33 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
             printf(RED "\nClient disconnected.\n" RESET);
             break;
         }
-
+        printf("MSG Received\n");
         // Print received message
-        printf("Received: %s\n", buffer);
+
+        // Create a packet for HMD
+        std::vector<uint8_t> packet;
+
+        int thisevent = 1;
+
+        // Add the lower byte first
+        packet.push_back((thisevent >> 0) & 0xFF); // LSB
+        // Add the higher byte second
+        packet.push_back((thisevent >> 8) & 0xFF); // MSB
+
+        // Copy the first 14 bytes manually using a loop
+        for (int i = 0; i < 14; ++i) {
+            packet.push_back(buffer[i]);
+        }
+
+        //printf("Received: %s\n", buffer);
+        // HMD Format = (0.00, 0.00, 0.00), (0.00000, 0.00000, 0.00000, 1.00000)
 
         // Broadcast message to all clients
         EnterCriticalSection(&cs);
         for (int i = 0; i < clientCount; i++) {
             if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                send(clientSockets[i], buffer, bytesReceived, 0);
+                //send(clientSockets[i], buffer, bytesReceived, 0);
+                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
             }
         }
         LeaveCriticalSection(&cs);
