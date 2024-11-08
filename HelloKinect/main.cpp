@@ -1,39 +1,33 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-
 #include <array>
 #include <iostream>
 #include <map>
 #include <vector>
 #include <thread>
 #include <string>
-
-
-// For Kinect stuff
-#include <k4arecord/playback.h>
-#include <k4a/k4a.h>
-#include <k4abt.h>
-#include <k4arecord/k4arecord_export.h>
-#include <k4arecord/record.h>
-#include <k4arecord/types.h>
-
-// For string handling
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-// for file operations
-#include <fstream>
-
-// For timestamps
-#include <chrono>
-
-// for UDP
-#include<winsock2.h>
-#include <Ws2tcpip.h>
-#include <ws2tcpip.h> // For inet_addr and other functions
+#include <k4arecord/playback.h>     // For Kinect stuff
+#include <k4a/k4a.h>                // For Kinect stuff
+#include <k4abt.h>                  // For Kinect stuff
+#include <k4arecord/k4arecord_export.h>// For Kinect stuff
+#include <k4arecord/record.h>       // For Kinect stuff
+#include <k4arecord/types.h>        // For Kinect stuff
+#include <stdio.h>                  // For string handling
+#include <stdlib.h>                 // For string handling
+#include <string.h>                 // For string handling
+#include <fstream>                  // For file operations
+#include <chrono>                   // For timestamps
+#include<winsock2.h>                // For UDP / TCP
+#include <Ws2tcpip.h>               // For UDP / TCP
+#include <ws2tcpip.h>               // For inet_addr and other functions
 #include "main.h"
-#pragma comment(lib,"ws2_32.lib") //Winsock Library
+
+#pragma comment(lib,"ws2_32.lib")   //Winsock Library
+
+
+
+#define PORT 8844	//The port on which to listen for incoming data
+//#define PORT 8844	//The port on which to listen for incoming data
 
 #define MAX_CLIENTS 10
 SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
@@ -43,8 +37,6 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 int TEMPCOUNTER = -1;
 int TEMPLIMITER = 0; // set to zero for NO LIMIT
 
-#define PORT 11111	//The port on which to listen for incoming data
-//#define PORT 8844	//The port on which to listen for incoming data
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -394,7 +386,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
             printf(RED "\nClient disconnected.\n" RESET);
             break;
         }
-        printf("MSG Received\n");
+        printf("\nMSG Received");
         // Print received message
 
         // Create a packet for HMD
