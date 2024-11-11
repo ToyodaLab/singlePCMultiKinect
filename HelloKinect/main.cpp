@@ -26,7 +26,7 @@
 
 
 
-#define PORT 8844	//The port on which to listen for incoming data
+#define PORT 33333	//The port on which to listen for incoming data
 //#define PORT 8844	//The port on which to listen for incoming data
 
 #define MAX_CLIENTS 10
@@ -386,25 +386,27 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
             printf(RED "\nClient disconnected.\n" RESET);
             break;
         }
-        printf("\nMSG Received");
-        // Print received message
+
 
         // Create a packet for HMD
-        std::vector<uint8_t> packet;
+        std::vector<uint8_t> packetToTransmit;
 
-        int thisevent = 1;
+        // What is the recieved event
+        int thisevent = (bytes[0] << 8) | bytes[1];
+
+        packetToTransmit.push_back(bytes[0]);
+        packetToTransmit.push_back(bytes[1]);
 
         // Add the lower byte first
-        packet.push_back((thisevent >> 0) & 0xFF); // LSB
+        //packetToTransmit.push_back((thisevent >> 0) & 0xFF); // LSB
         // Add the higher byte second
-        packet.push_back((thisevent >> 8) & 0xFF); // MSB
+        //packetToTransmit.push_back((thisevent >> 8) & 0xFF); // MSB
 
         // Copy the first 14 bytes manually using a loop
-        for (int i = 0; i < 14; ++i) {
-            packet.push_back(buffer[i]);
+        for (int i = 0; i < bytesReceived; ++i) {
+            packetToTransmit.push_back(buffer[i]);
         }
 
-        //printf("Received: %s\n", buffer);
         // HMD Format = (0.00, 0.00, 0.00), (0.00000, 0.00000, 0.00000, 1.00000)
 
         // Broadcast message to all clients
@@ -412,7 +414,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         for (int i = 0; i < clientCount; i++) {
             if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                 //send(clientSockets[i], buffer, bytesReceived, 0);
-                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+                send(clientSockets[i], reinterpret_cast<const char*>(packetToTransmit.data()), packetToTransmit.size(), 0);
             }
         }
         LeaveCriticalSection(&cs);
