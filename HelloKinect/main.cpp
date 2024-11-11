@@ -392,10 +392,10 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         std::vector<uint8_t> packetToTransmit;
 
         // What is the recieved event
-        int thisevent = (bytes[0] << 8) | bytes[1];
+        int thisevent = (buffer[0] << 8) | buffer[1];
 
-        packetToTransmit.push_back(bytes[0]);
-        packetToTransmit.push_back(bytes[1]);
+        packetToTransmit.push_back(buffer[0]);
+        packetToTransmit.push_back(buffer[1]);
 
         // Add the lower byte first
         //packetToTransmit.push_back((thisevent >> 0) & 0xFF); // LSB
