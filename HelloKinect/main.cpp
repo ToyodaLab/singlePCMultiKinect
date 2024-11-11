@@ -387,34 +387,25 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
             break;
         }
 
-
-        // Create a packet for HMD
-        std::vector<uint8_t> packetToTransmit;
-
         // What is the recieved event
         int thisevent = (buffer[0] << 8) | buffer[1];
+        // What is the total packet size
+        int packetSendSize = (buffer[2] << 8) | buffer[3];
 
-        packetToTransmit.push_back(buffer[0]);
-        packetToTransmit.push_back(buffer[1]);
+        // Create a new packet to broadcast
+        std::vector<uint8_t> packetToTransmit;
 
-        // Add the lower byte first
-        //packetToTransmit.push_back((thisevent >> 0) & 0xFF); // LSB
-        // Add the higher byte second
-        //packetToTransmit.push_back((thisevent >> 8) & 0xFF); // MSB
-
-        // Copy the first 14 bytes manually using a loop
-        for (int i = 0; i < bytesReceived; ++i) {
-            packetToTransmit.push_back(buffer[i]);
-        }
-
-        // HMD Format = (0.00, 0.00, 0.00), (0.00000, 0.00000, 0.00000, 1.00000)
+        // Copy the good bytes bytes manually using a loop
+        //for (int i = 0; i < packetSendSize; ++i) {
+        //    packetToTransmit.push_back(buffer[i]);
+        //}
 
         // Broadcast message to all clients
         EnterCriticalSection(&cs);
         for (int i = 0; i < clientCount; i++) {
             if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                 //send(clientSockets[i], buffer, bytesReceived, 0);
-                send(clientSockets[i], reinterpret_cast<const char*>(packetToTransmit.data()), packetToTransmit.size(), 0);
+                send(clientSockets[i], reinterpret_cast<const char*>(buffer), packetSendSize, 0);
             }
         }
         LeaveCriticalSection(&cs);
@@ -433,6 +424,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
     closesocket(clientSocket);
     return 0;
 }
+
 // Function to accept incoming connections in a separate thread
 DWORD WINAPI AcceptConnections(LPVOID lpParam) {
     SOCKET serverSocket = (SOCKET)lpParam;
