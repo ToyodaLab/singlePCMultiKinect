@@ -388,9 +388,9 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         }
 
         // What is the recieved event
-        int thisevent = (buffer[0] << 8) | buffer[1];
+        int thisevent = buffer[1] | (buffer[0] << 8);
         // What is the total packet size
-        int packetSendSize = (buffer[2] << 8) | buffer[3];
+        int packetSendSize = buffer[3] | (buffer[2] << 8);
 
         // Create a new packet to broadcast
         std::vector<uint8_t> packetToTransmit;
