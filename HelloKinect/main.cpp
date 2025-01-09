@@ -198,6 +198,11 @@ public:
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
+
+                        //if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
+                        //    break;
+                        //}
+
                         char str[BUFFER_SIZE];
                         snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
                             captureFrameCount,
@@ -236,6 +241,7 @@ public:
                             //    packet.push_back((integers[i] >> (j * 8)) & 0xFF);
                             //}
                         }
+
 
                         // Add half-float bytes
                         for (int i = 0; i < 3; ++i) {
@@ -388,9 +394,9 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
         }
 
         // What is the recieved event
-        int thisevent = buffer[1] | (buffer[0] << 8);
+        int thisevent = (buffer[1] << 8) | buffer[0];
         // What is the total packet size
-        int packetSendSize = buffer[3] | (buffer[2] << 8);
+        int packetSendSize = (buffer[3] << 8) | buffer[2];
 
         // Create a new packet to broadcast
         std::vector<uint8_t> packetToTransmit;
