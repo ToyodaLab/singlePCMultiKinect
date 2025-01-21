@@ -24,8 +24,6 @@
 
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
-
-
 #define PORT 33333	//The port on which to listen for incoming data
 //#define PORT 8844	//The port on which to listen for incoming data
 
@@ -242,7 +240,6 @@ public:
                             //}
                         }
 
-
                         // Add half-float bytes
                         for (int i = 0; i < 3; ++i) {
                             uint16_t halfFloat = floatToHalf(floats[i]);
@@ -251,17 +248,10 @@ public:
                             }
                         }
 
-                        if (TEMPCOUNTER == -1) {
+                        if (TEMPCOUNTER == -1 && jointCounter == 0) {
                             // Only print first joint
-                            if (jointCounter == 0) {
                                 printf(str);
                                 std::cout << std::endl;
-                            }
-                        }
-                        else {
-                            if (jointCounter == 0) {
-                                printf(".");
-                            }
                         }
 
                         // Print byte array
