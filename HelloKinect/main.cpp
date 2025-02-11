@@ -193,13 +193,17 @@ public:
                         packet.push_back((header[i] >> 8) & 0xFF); // MSB
                     }
 
+                    // LKTODO create a variable e.g. DoSendMessage that is assumed true
+                    bool DoSendMessage = true;
+
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
 
-                        //if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
-                        //    break;
-                        //}
+                        //LKTODO if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
+                        if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
+                            DoSendMessage = false;
+                        }
 
                         char str[BUFFER_SIZE];
                         snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
@@ -261,24 +265,36 @@ public:
                         //std::cout << std::endl;
 
                     }
+                    
+                    
                     TEMPCOUNTER++;
                     if (TEMPCOUNTER >= TEMPLIMITER) {
                         if (SENDJOINTSVIATCP) {
-                            // Broadcast message to all clients
-                            EnterCriticalSection(&cs);
-                            for (int i = 0; i < clientCount; i++) {
-                                //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                    //Sends whole body as one packet
-                                printf("Packet size %zd: ", packet.size());
+                            if (DoSendMessage){
+                                // Broadcast message to all clients
+                                EnterCriticalSection(&cs);
+                                for (int i = 0; i < clientCount; i++) {
+                                    //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                        //Sends whole body as one packet
+                                    printf("Packet size %zd: ", packet.size());
 
-                                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-                                //if (jointCounter == 0 && RECORDTIMESTAMPS) {
-                                //    std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                                //    writeToLog(eventText);
+
+                                    // LKTODO IF statemtent. Check DoSendMessage. If true send if false, ignore
+
+                                    send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+
+
+
+
+
+                                    //if (jointCounter == 0 && RECORDTIMESTAMPS) {
+                                    //    std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                                    //    writeToLog(eventText);
+                                    //}
                                 //}
-                            //}
+                                }
+                                LeaveCriticalSection(&cs);
                             }
-                            LeaveCriticalSection(&cs);
                         }
                         TEMPCOUNTER = -1;
                     }
