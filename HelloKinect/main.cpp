@@ -22,6 +22,8 @@
 #include <ws2tcpip.h>               // For inet_addr and other functions
 #include "main.h"
 
+#include<algorithm>
+
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
 #define PORT 33333	//The port on which to listen for incoming data
@@ -57,6 +59,30 @@ sockaddr_in dest;
 
 SOCKET serverSocket, clientSocket;
 #define BUFFER_SIZE 1024 //Max length of buffer
+
+
+
+
+struct KinectDevice {
+    k4a_device_t device;
+    std::string serial_number;
+    std::string name;
+};
+
+// Function to retrieve device SN
+std::string get_kinect_serial(k4a_device_t device) {
+    char serial_number[256];
+    size_t sn_size = sizeof(serial_number);
+    if (k4a_device_get_serialnum(device, serial_number, &sn_size) != K4A_RESULT_SUCCEEDED) {
+        std::cerr << "Failed to get serial number for a Kinect device" << std::endl;
+        return "";
+    }
+    return std::string(serial_number);
+}
+
+
+
+
 
 void writeToLog(std::string& topic)
 {
@@ -545,6 +571,8 @@ int main()
             return 1;
         }
 
+       
+
         // Start listening for incoming connections
         if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
             fprintf(stderr, "Listen failed: %d\n", WSAGetLastError());
@@ -571,36 +599,99 @@ int main()
     // Find number of devices and initialise as nullptr
     uint32_t device_count = k4a_device_get_installed_count();
     printf("Found %d connected devices:\n", device_count);
-    std::vector<k4a_device_t> devices(device_count, { nullptr });  
+   // std::vector<k4a_device_t> devices(device_count, { nullptr });  
+
+  
+  // for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
+  //     if (k4a_device_open(devicesFoundCounter, &devices[devicesFoundCounter]) != K4A_RESULT_SUCCEEDED)
+  //     {
+  //         std::cerr << "Failed to open the Kinect Azure device" << std::endl;
+  //         return 1;
+  //     }
+  //     else {
+  //         JointFinder kinectJointFinder;
+  //         std::cerr << "Succesfully opened a Kinect Azure device" << std::endl;
+  //         // push_back adds to end of vector list
+  //         workers.push_back(std::thread{ &JointFinder::DetectJoints, 
+  //             &kinectJointFinder, 
+  //             devicesFoundCounter,
+  //             devices[devicesFoundCounter],
+  //             socketToTransmit });
+  //     }
+  // }
+  //
+  // for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
+  //     try {
+  //         workers[devicesFoundCounter].join();
+  //     }
+  //     catch (std::exception ex) {
+  //         printf("join() error log : %s\n", ex.what());
+  //         while (1);
+  //     }
+  // }
+
+    // HS
+    // Store devices with their serial numbers
+    std::vector<KinectDevice> devices;
 
 
-    for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
-        if (k4a_device_open(devicesFoundCounter, &devices[devicesFoundCounter]) != K4A_RESULT_SUCCEEDED)
-        {
+    // Retrieve and print serial numbers in initial order
+    std::cout << "Initial order of devices:" << std::endl;
+
+    for (uint32_t i = 0; i < device_count; i++) {
+        k4a_device_t device = nullptr;
+        if (k4a_device_open(i, &device) != K4A_RESULT_SUCCEEDED) {
             std::cerr << "Failed to open the Kinect Azure device" << std::endl;
             return 1;
         }
         else {
-            JointFinder kinectJointFinder;
-            std::cerr << "Succesfully opened a Kinect Azure device" << std::endl;
-            // push_back adds to end of vector list
-            workers.push_back(std::thread{ &JointFinder::DetectJoints, 
-                &kinectJointFinder, 
-                devicesFoundCounter,
-                devices[devicesFoundCounter],
-                socketToTransmit });
+            std::string serial_number = get_kinect_serial(device);
+            if (!serial_number.empty()) {
+                std::cout << "Device " << i << " SN: " << serial_number << std::endl;
+                devices.push_back({ device, serial_number });
+            }
+            else {
+                k4a_device_close(device);
+            }
         }
     }
 
-    for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
+    // Sort devices by SN
+    std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
+        return a.serial_number < b.serial_number;
+        });
+
+    // Print sorted order
+    std::cout << "Sorted order of devices:" << std::endl;
+    for (size_t i = 0; i < devices.size(); i++) {
+        devices[i].name = "Kinect_" + std::to_string(i);
+        std::cout << "   Device " << i << " SN: " << devices[i].serial_number << " Assigned Name: " << devices[i].name << std::endl;
+    }
+
+
+
+    // Start threads for sorted devices
+    for (size_t i = 0; i < devices.size(); i++) {
+        JointFinder kinectJointFinder;
+        std::cerr << "Starting thread for Kinect device SN: " << devices[i].serial_number << std::endl;
+        workers.push_back(std::thread(&JointFinder::DetectJoints,
+            &kinectJointFinder,
+            static_cast<int>(i),
+            devices[i].device,
+            socketToTransmit));
+    }
+
+    // Join threads
+    for (size_t i = 0; i < workers.size(); i++) {
         try {
-            workers[devicesFoundCounter].join();
+            workers[i].join();
         }
-        catch (std::exception ex) {
-            printf("join() error log : %s\n", ex.what());
-            while (1);
+        catch (std::exception& ex) {
+            printf("join() error log: %s\n", ex.what());
         }
     }
+
+
 
     if (SENDJOINTSVIAUDP) {
         // Stop and close the socket when done
@@ -615,12 +706,21 @@ int main()
         WSACleanup();
     }
 
-    // Stop and close the devices when done
-    for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
-        
-        k4a_device_stop_cameras(devices[devicesFoundCounter]);
-        k4a_device_close(devices[devicesFoundCounter]);
+
+   //// Stop and close the devices when done
+   //for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
+   //
+   //    k4a_device_stop_cameras(devices[devicesFoundCounter]);
+   //    k4a_device_close(devices[devicesFoundCounter]);
+   //}
+
+  
+  //HS
+    for (size_t i = 0; i < devices.size(); i++) {
+        k4a_device_stop_cameras(devices[i].device);
+        k4a_device_close(devices[i].device);
     }
+
 
     if (RECORDTIMESTAMPS) {
         // Close the file when done
