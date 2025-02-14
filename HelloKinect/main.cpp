@@ -201,7 +201,7 @@ public:
                     {
 
                         //LKTODO if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
-                        if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
+                        if (skeleton.joints[jointCounter].position.xyz.z > 4400) {
                             DoSendMessage = false;
                         }
 
