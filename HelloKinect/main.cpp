@@ -49,6 +49,7 @@ bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typ
 bool SENDJOINTSVIAUDP = false;      // Send Joints via UDP. Sets up sockets and sends data using UDP
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
 bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
+bool SENDROTATIONS = true;         // Send rotations of joints
 
 //File to write to
 std::ofstream outputFile("C:\\Temp\\Experiments\\24-10-28\\KinectLog.txt");
@@ -59,9 +60,6 @@ sockaddr_in dest;
 
 SOCKET serverSocket, clientSocket;
 #define BUFFER_SIZE 1024 //Max length of buffer
-
-
-
 
 struct KinectDevice {
     k4a_device_t device;
@@ -79,10 +77,6 @@ std::string get_kinect_serial(k4a_device_t device) {
     }
     return std::string(serial_number);
 }
-
-
-
-
 
 void writeToLog(std::string& topic)
 {
@@ -113,6 +107,7 @@ public:
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
         config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
+        //config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
         //config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
@@ -160,9 +155,13 @@ public:
             case K4A_WAIT_RESULT_SUCCEEDED:
                 break;
             case K4A_WAIT_RESULT_TIMEOUT:
-                printf("Timed out waiting for a capture\n");
+                printf("Timed out waiting for a capture. Restarting capture...\n");
+                k4a_device_stop_cameras(openedDevice);
+                if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
+                    printf("Failed to restart capturing from the Kinect Azure device");
+                    goto Exit;
+                }
                 continue;
-                break;
             case K4A_WAIT_RESULT_FAILED:
                 printf("Failed to read a capture\n");
                 goto Exit;
@@ -251,11 +250,6 @@ public:
                             jointCounter,
                             skeleton.joints[jointCounter].confidence_level 
                         };
-                        float floats[3] = { 
-                            skeleton.joints[jointCounter].position.xyz.x,
-                            skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z
-                        };
 
                         // Add integer bytes. Only two bytes per integer -> up to 65,535 
                         for (int i = 0; i < 2; ++i) {
@@ -270,8 +264,28 @@ public:
                             //}
                         }
 
+                        float floats[7] = { 
+                            skeleton.joints[jointCounter].position.xyz.x,
+                            skeleton.joints[jointCounter].position.xyz.y,
+                            skeleton.joints[jointCounter].position.xyz.z
+                        };
+
+						// How many floats to send. If SENDROTATIONS is true, then send 7 floats. 
+                        // If false, then only send 3 floats
+                        int countTo = 3;
+
+                        if(SENDROTATIONS) {
+
+							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.w;
+							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.x;
+							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.y;
+							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.z;
+							countTo = 7;
+                        }
+                        
+
                         // Add half-float bytes
-                        for (int i = 0; i < 3; ++i) {
+                        for (int i = 0; i < countTo; ++i) {
                             uint16_t halfFloat = floatToHalf(floats[i]);
                             for (int j = 0; j < sizeof(halfFloat); ++j) {
                                 packet.push_back((halfFloat >> (j * 8)) & 0xFF);
@@ -283,16 +297,8 @@ public:
                                 printf(str);
                                 std::cout << std::endl;
                         }
-
-                        // Print byte array
-                        //for (size_t i = 0; i < packet.size(); ++i) {
-                        //    std::cout << (int)packet[i] << ",";
-                        //}
-                        //std::cout << std::endl;
-
                     }
-                    
-                    
+
                     TEMPCOUNTER++;
                     if (TEMPCOUNTER >= TEMPLIMITER) {
                         if (SENDJOINTSVIATCP) {
@@ -304,12 +310,8 @@ public:
                                         //Sends whole body as one packet
                                     printf("Packet size %zd: ", packet.size());
 
-
                                     // LKTODO IF statemtent. Check DoSendMessage. If true send if false, ignore
-
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-
-
 
 
 
@@ -322,6 +324,8 @@ public:
                                 LeaveCriticalSection(&cs);
                             }
                         }
+
+
                         TEMPCOUNTER = -1;
                     }
                 }
