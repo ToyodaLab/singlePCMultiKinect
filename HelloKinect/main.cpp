@@ -200,23 +200,12 @@ public:
                     // Create a packet for whole skeleton (byte array)
                     std::vector<uint8_t> packet;
 
-                    // First add EVENTID and HEADER FRAMES (reduced transmitted data)
-                    // 0 is first main event (a skeleton)
+                    // Add DEVICEID as a header
+                    // Add the lower byte first
+                    packet.push_back((deviceID >> 0) & 0xFF); // LSB
 
-                    int header[5] = {
-                            0,                  // Event ZERO (a skeleton)
-                            captureFrameCount,  // current Frame ID
-                            deviceID            // which device is it from
-                    };
-                    
-                    // Add integer bytes. Only two bytes per integer -> up to 65,535 
-                    for (int i = 0; i < 3; ++i) {
-                        // Add the lower byte first
-                        packet.push_back((header[i] >> 0) & 0xFF); // LSB
-
-                        // Add the higher byte second
-                        packet.push_back((header[i] >> 8) & 0xFF); // MSB
-                    }
+                    // Add the higher byte second
+                    packet.push_back((deviceID >> 8) & 0xFF); // MSB
 
                     // LKTODO create a variable e.g. DoSendMessage that is assumed true
                     bool DoSendMessage = true;
@@ -276,10 +265,10 @@ public:
 
                         if(SENDROTATIONS) {
 
-							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.w;
-							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.x;
-							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.y;
-							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.z;
+							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.x;
+							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.y;
+							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.z;
+							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.w;
 							countTo = 7;
                         }
                         
@@ -519,26 +508,27 @@ int main()
 
     SOCKET socketToTransmit = NULL;
 
-    if (SENDJOINTSVIAUDP) {
-        const char* srcIP = "127.0.0.1";
-        const char* destIP = "180.43.67.62";
-        //const char* destIP = "127.0.0.1";
-        //const char* destIP = "157.82.148.182";
-        sockaddr_in local;
-        WSAData data;
-        WSAStartup(MAKEWORD(2, 2), &data);
+    //if (SENDJOINTSVIAUDP) {
+    //    const char* srcIP = "127.0.0.1";
+    //    //const char* destIP = "180.43.67.62";
+    //    //const char* destIP = "127.0.0.1";
+    //    //const char* destIP = "157.82.148.182";
+    //    sockaddr_in local;
+    //    WSAData data;
 
-        local.sin_family = AF_INET;
-        inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
-        local.sin_port = htons(0);
+    //    //WSAStartup(MAKEWORD(2, 2), &data);
 
-        dest.sin_family = AF_INET;
-        inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
-        dest.sin_port = htons(PORT);
+    //    //local.sin_family = AF_INET;
+    //    //inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
+    //    //local.sin_port = htons(0);
 
-        socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-    }
+    //    //dest.sin_family = AF_INET;
+    //    //inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
+    //    //dest.sin_port = htons(PORT);
+
+    //    socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    //    bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
+    //}
 
     if (SENDJOINTSVIATCP) {
         WSADATA wsaData;
