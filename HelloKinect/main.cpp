@@ -207,6 +207,13 @@ public:
                     // Add the higher byte second
                     packet.push_back((deviceID >> 8) & 0xFF); // MSB
 
+                    // Add a second time to match header
+                    // Add the lower byte first
+                    packet.push_back((deviceID >> 0) & 0xFF); // LSB
+
+                    // Add the higher byte second
+                    packet.push_back((deviceID >> 8) & 0xFF); // MSB
+
                     // LKTODO create a variable e.g. DoSendMessage that is assumed true
                     bool DoSendMessage = true;
 
