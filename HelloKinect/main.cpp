@@ -46,8 +46,8 @@ int TEMPLIMITER = 0; // set to zero for NO LIMIT
 
 // Toggle functions
 bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
-bool SENDJOINTSVIAUDP = false;      // Send Joints via UDP. Sets up sockets and sends data using UDP
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
+bool OVERRIDEKINECTORDER = true; // Override the order of the Kinects. Set to true to override the order of the Kinects
 bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
 bool SENDROTATIONS = true;         // Send rotations of joints
 
@@ -149,7 +149,7 @@ public:
                 writeToLog(eventText);
             }
 
-            // Get a depth frame
+
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
             {
             case K4A_WAIT_RESULT_SUCCEEDED:
@@ -157,6 +157,10 @@ public:
             case K4A_WAIT_RESULT_TIMEOUT:
                 printf("Timed out waiting for a capture. Restarting capture...\n");
                 k4a_device_stop_cameras(openedDevice);
+                if (capture != NULL)
+                {
+                    k4a_capture_release(capture);
+                }
                 if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
                     printf("Failed to restart capturing from the Kinect Azure device");
                     goto Exit;
@@ -164,6 +168,15 @@ public:
                 continue;
             case K4A_WAIT_RESULT_FAILED:
                 printf("Failed to read a capture\n");
+                k4a_device_stop_cameras(openedDevice);
+                if (capture != NULL)
+                {
+                    k4a_capture_release(capture);
+                }
+                if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
+                    printf("Failed to restart capturing from the Kinect Azure device");
+                    goto Exit;
+                }
                 goto Exit;
             }
 
@@ -178,7 +191,7 @@ public:
 
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
-
+            
             k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, K4A_WAIT_INFINITE);
             //k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0); // Was set to 0
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
@@ -274,7 +287,7 @@ public:
 
 							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.x;
 							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.y;
-							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.z;
+							floats[5] = -skeleton.joints[jointCounter].orientation.wxyz.z;
 							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.w;
 							countTo = 7;
                         }
@@ -308,14 +321,6 @@ public:
 
                                     // LKTODO IF statemtent. Check DoSendMessage. If true send if false, ignore
                                     send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-
-
-
-                                    //if (jointCounter == 0 && RECORDTIMESTAMPS) {
-                                    //    std::string eventText = "C,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                                    //    writeToLog(eventText);
-                                    //}
-                                //}
                                 }
                                 LeaveCriticalSection(&cs);
                             }
@@ -515,28 +520,6 @@ int main()
 
     SOCKET socketToTransmit = NULL;
 
-    //if (SENDJOINTSVIAUDP) {
-    //    const char* srcIP = "127.0.0.1";
-    //    //const char* destIP = "180.43.67.62";
-    //    //const char* destIP = "127.0.0.1";
-    //    //const char* destIP = "157.82.148.182";
-    //    sockaddr_in local;
-    //    WSAData data;
-
-    //    //WSAStartup(MAKEWORD(2, 2), &data);
-
-    //    //local.sin_family = AF_INET;
-    //    //inet_pton(AF_INET, srcIP, &local.sin_addr.s_addr);
-    //    //local.sin_port = htons(0);
-
-    //    //dest.sin_family = AF_INET;
-    //    //inet_pton(AF_INET, destIP, &dest.sin_addr.s_addr);
-    //    //dest.sin_port = htons(PORT);
-
-    //    socketToTransmit = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    //    bind(socketToTransmit, (sockaddr*)&local, sizeof(local));
-    //}
-
     if (SENDJOINTSVIATCP) {
         WSADATA wsaData;
         SOCKET serverSocket;
@@ -602,35 +585,6 @@ int main()
     printf("Found %d connected devices:\n", device_count);
    // std::vector<k4a_device_t> devices(device_count, { nullptr });  
 
-  
-  // for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
-  //     if (k4a_device_open(devicesFoundCounter, &devices[devicesFoundCounter]) != K4A_RESULT_SUCCEEDED)
-  //     {
-  //         std::cerr << "Failed to open the Kinect Azure device" << std::endl;
-  //         return 1;
-  //     }
-  //     else {
-  //         JointFinder kinectJointFinder;
-  //         std::cerr << "Succesfully opened a Kinect Azure device" << std::endl;
-  //         // push_back adds to end of vector list
-  //         workers.push_back(std::thread{ &JointFinder::DetectJoints, 
-  //             &kinectJointFinder, 
-  //             devicesFoundCounter,
-  //             devices[devicesFoundCounter],
-  //             socketToTransmit });
-  //     }
-  // }
-  //
-  // for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
-  //     try {
-  //         workers[devicesFoundCounter].join();
-  //     }
-  //     catch (std::exception ex) {
-  //         printf("join() error log : %s\n", ex.what());
-  //         while (1);
-  //     }
-  // }
-
     // HS
     // Store devices with their serial numbers
     std::vector<KinectDevice> devices;
@@ -657,10 +611,39 @@ int main()
         }
     }
 
-    // Sort devices by SN
-    std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
-        return a.serial_number < b.serial_number;
-        });
+
+
+	if (OVERRIDEKINECTORDER) {
+        // Override the order of the devices  
+        std::cout << "Overriding Kinect device order..." << std::endl;  
+
+        // Define the desired order of serial numbers  
+        std::vector<std::string> desiredOrder = {  
+            "000435922712",  // set 0
+            "000398922712",  // set 1
+            "000976922712",  //; set 2
+            "001127311512"  // set 3
+        };  
+   
+        // Reorder devices based on the desired order  
+        std::vector<KinectDevice> reorderedDevices;  
+        for (const auto& sn : desiredOrder) {  
+            auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {  
+                return device.serial_number == sn;  
+            });  
+            if (it != devices.end()) {  
+                reorderedDevices.push_back(*it);  
+            }  
+        }  
+
+        devices = reorderedDevices;  
+	}
+    else {
+        // Sort devices in order of SN
+        std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
+            return a.serial_number < b.serial_number;
+            });
+    }
 
     // Print sorted order
     std::cout << "Sorted order of devices:" << std::endl;
@@ -692,29 +675,12 @@ int main()
         }
     }
 
-
-
-    if (SENDJOINTSVIAUDP) {
-        // Stop and close the socket when done
-        closesocket(socketToTransmit);
-        WSACleanup();
-    }
-
     if (SENDJOINTSVIATCP) {
         // Close sockets and clean up
         DeleteCriticalSection(&cs);
         closesocket(serverSocket);
         WSACleanup();
     }
-
-
-   //// Stop and close the devices when done
-   //for (int devicesFoundCounter = 0; devicesFoundCounter < device_count; devicesFoundCounter++) {
-   //
-   //    k4a_device_stop_cameras(devices[devicesFoundCounter]);
-   //    k4a_device_close(devices[devicesFoundCounter]);
-   //}
-
   
   //HS
     for (size_t i = 0; i < devices.size(); i++) {
