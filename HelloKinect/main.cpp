@@ -287,7 +287,7 @@ public:
 
 							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.x;
 							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.y;
-							floats[5] = -skeleton.joints[jointCounter].orientation.wxyz.z;
+							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.z;
 							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.w;
 							countTo = 7;
                         }
