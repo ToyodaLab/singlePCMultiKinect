@@ -26,7 +26,7 @@
 
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
-#define PORT 33333	//The port on which to listen for incoming data
+#define PORT 8844	//The port on which to listen for incoming data
 //#define PORT 8844	//The port on which to listen for incoming data
 
 #define MAX_CLIENTS 10
@@ -49,7 +49,6 @@ bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typ
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
 bool OVERRIDEKINECTORDER = true; // Override the order of the Kinects. Set to true to override the order of the Kinects
 bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
-bool SENDROTATIONS = true;         // Send rotations of joints
 
 //File to write to
 std::ofstream outputFile("C:\\Temp\\Experiments\\24-10-28\\KinectLog.txt");
@@ -67,17 +66,18 @@ struct KinectDevice {
     std::string name;
 };
 
-// Function to retrieve device SN
+// Retrieve device serial number
 std::string get_kinect_serial(k4a_device_t device) {
     char serial_number[256];
     size_t sn_size = sizeof(serial_number);
     if (k4a_device_get_serialnum(device, serial_number, &sn_size) != K4A_RESULT_SUCCEEDED) {
-        std::cerr << "Failed to get serial number for a Kinect device" << std::endl;
+        printf(RED "\nFailed to get serial number for a Kinect device\n" RESET);
+
         return "";
     }
     return std::string(serial_number);
 }
-
+// Write joint + timestamp to a log file
 void writeToLog(std::string& topic)
 {
     // Get the current time
@@ -92,7 +92,7 @@ void writeToLog(std::string& topic)
     outputFile << topic + "," + duractionMilliAsString + "\n";
 }
 
-// Each Kinect is a JointFinder.
+// Each Kinect is a class JointFinder.
 class JointFinder {
 public:
     void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket) {
@@ -214,18 +214,12 @@ public:
                     std::vector<uint8_t> packet;
 
                     // Add DEVICEID as a header
-                    // Add the lower byte first
                     packet.push_back((deviceID >> 0) & 0xFF); // LSB
-
-                    // Add the higher byte second
                     packet.push_back((deviceID >> 8) & 0xFF); // MSB
 
-                    // Add a second time to match header
-                    // Add the lower byte first
-                    packet.push_back((deviceID >> 0) & 0xFF); // LSB
-
-                    // Add the higher byte second
-                    packet.push_back((deviceID >> 8) & 0xFF); // MSB
+                    // Add a second time to match header (does nothing really)
+                    packet.push_back((deviceID >> 0) & 0xFF);
+                    packet.push_back((deviceID >> 8) & 0xFF);
 
                     // LKTODO create a variable e.g. DoSendMessage that is assumed true
                     bool DoSendMessage = true;
@@ -248,11 +242,9 @@ public:
                             skeleton.joints[jointCounter].confidence_level,
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z/*,
-                            skeleton.joints[jointCounter].orientation.wxyz.w,
-                            skeleton.joints[jointCounter].orientation.wxyz.x,
-                            skeleton.joints[jointCounter].orientation.wxyz.y,
-                            skeleton.joints[jointCounter].orientation.wxyz.z*/
+                            skeleton.joints[jointCounter].position.xyz.z/*, 
+                            // rotation is quart so not helpful to print
+                            skeleton.joints[jointCounter].orientation.wxyz.w,*/
                         );
 
                         int integers[2] = { 
@@ -262,10 +254,7 @@ public:
 
                         // Add integer bytes. Only two bytes per integer -> up to 65,535 
                         for (int i = 0; i < 2; ++i) {
-                            // Add the lower byte first
                             packet.push_back((integers[i] >> 0) & 0xFF); // LSB
-
-                            // Add the higher byte second
                             packet.push_back((integers[i] >> 8) & 0xFF); // MSB
                             //for (int j = 0; j < sizeof(integers[i]); ++j) {
 
@@ -276,25 +265,15 @@ public:
                         float floats[7] = { 
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z
+                            skeleton.joints[jointCounter].position.xyz.z,
+                            skeleton.joints[jointCounter].orientation.wxyz.x,
+                            skeleton.joints[jointCounter].orientation.wxyz.y,
+                            skeleton.joints[jointCounter].orientation.wxyz.z,
+                            skeleton.joints[jointCounter].orientation.wxyz.w
                         };
 
-						// How many floats to send. If SENDROTATIONS is true, then send 7 floats. 
-                        // If false, then only send 3 floats
-                        int countTo = 3;
-
-                        if(SENDROTATIONS) {
-
-							floats[3] = skeleton.joints[jointCounter].orientation.wxyz.x;
-							floats[4] = skeleton.joints[jointCounter].orientation.wxyz.y;
-							floats[5] = skeleton.joints[jointCounter].orientation.wxyz.z;
-							floats[6] = skeleton.joints[jointCounter].orientation.wxyz.w;
-							countTo = 7;
-                        }
-                        
-
                         // Add half-float bytes
-                        for (int i = 0; i < countTo; ++i) {
+                        for (int i = 0; i < 7; ++i) {
                             uint16_t halfFloat = floatToHalf(floats[i]);
                             for (int j = 0; j < sizeof(halfFloat); ++j) {
                                 packet.push_back((halfFloat >> (j * 8)) & 0xFF);
@@ -508,6 +487,43 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
     return 0;
 }
 
+// Save the ordered devices to a file
+void SaveOrderedDevices(const std::vector<KinectDevice>& devices, const std::string& filename) {
+    std::ofstream ofs(filename);
+    if (!ofs.is_open()) {
+        //std::cerr << "Failed to open " << filename << " for writing." << std::endl;
+        printf(RED "\nFailed to open file for saving\n" RESET);
+        return;
+    }
+    // Save serial numbers in ascending order
+    std::vector<std::string> sns;
+    for (const auto& d : devices) sns.push_back(d.serial_number);
+    std::sort(sns.begin(), sns.end());
+    for (const auto& sn : sns) ofs << sn << std::endl;
+    ofs.close();
+}
+
+// Load the desired order of devices from a file
+std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
+    std::vector<std::string> desiredOrder;
+    std::ifstream ifs(filename);
+    if (!ifs.is_open()) {
+        printf(RED "\nFailed to file for reading\n" RESET);
+        return desiredOrder; // will be length 0
+    }
+    std::string line;
+    while (std::getline(ifs, line)) {
+        if (!line.empty()) {
+            desiredOrder.push_back(line);
+        }
+        else {
+            printf(RED "\nIssue loading a line\n" RESET);
+        }
+    }
+    ifs.close();
+    return desiredOrder;
+}
+
 int main()
 {
     if (RECORDTIMESTAMPS) {
@@ -583,12 +599,9 @@ int main()
     // Find number of devices and initialise as nullptr
     uint32_t device_count = k4a_device_get_installed_count();
     printf("Found %d connected devices:\n", device_count);
-   // std::vector<k4a_device_t> devices(device_count, { nullptr });  
 
-    // HS
     // Store devices with their serial numbers
     std::vector<KinectDevice> devices;
-
 
     // Retrieve and print serial numbers in initial order
     std::cout << "Initial order of devices:" << std::endl;
@@ -611,19 +624,28 @@ int main()
         }
     }
 
+    // Sort devices in order of SN
+    std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
+        return a.serial_number < b.serial_number;
+        });
 
+
+	// Save the ascending ordered devices to a file
+	SaveOrderedDevices(devices, "C:\\Temp\\tempCG\\orderedDevices.txt");
 
 	if (OVERRIDEKINECTORDER) {
         // Override the order of the devices  
         std::cout << "Overriding Kinect device order..." << std::endl;  
 
+        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\Temp\\tempCG\\desiredOrder.txt"); // Load the desired order from a file
+
         // Define the desired order of serial numbers  
-        std::vector<std::string> desiredOrder = {  
-            "000435922712",  // set 0
-            "000398922712",  // set 1
-            "000976922712",  //; set 2
-            "001127311512"  // set 3
-        };  
+        //std::vector<std::string> desiredOrder = {  
+        //    "000435922712",  // set 0
+        //    "000398922712",  // set 1
+        //    "000976922712",  //; set 2
+        //    "001127311512"  // set 3
+        //};  
    
         // Reorder devices based on the desired order  
         std::vector<KinectDevice> reorderedDevices;  
@@ -635,24 +657,17 @@ int main()
                 reorderedDevices.push_back(*it);  
             }  
         }  
-
         devices = reorderedDevices;  
 	}
-    else {
-        // Sort devices in order of SN
-        std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
-            return a.serial_number < b.serial_number;
-            });
-    }
 
     // Print sorted order
     std::cout << "Sorted order of devices:" << std::endl;
     for (size_t i = 0; i < devices.size(); i++) {
         devices[i].name = "Kinect_" + std::to_string(i);
-        std::cout << "   Device " << i << " SN: " << devices[i].serial_number << " Assigned Name: " << devices[i].name << std::endl;
+        std::cout << "   Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
     }
 
-
+    
 
     // Start threads for sorted devices
     for (size_t i = 0; i < devices.size(); i++) {
