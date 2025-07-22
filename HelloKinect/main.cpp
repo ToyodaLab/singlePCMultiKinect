@@ -19,7 +19,7 @@
 #include <chrono>                   // For timestamps
 #include<winsock2.h>                // For UDP / TCP
 #include <Ws2tcpip.h>               // For UDP / TCP
-#include <ws2tcpip.h>               // For inet_addr and other functions
+#include <direct.h>
 #include "main.h"
 
 #include<algorithm>
@@ -487,6 +487,7 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
     return 0;
 }
 
+
 // Save the ordered devices to a file
 void SaveOrderedDevices(const std::vector<KinectDevice>& devices, const std::string& filename) {
     std::ofstream ofs(filename);
@@ -517,7 +518,9 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
             desiredOrder.push_back(line);
         }
         else {
-            printf(RED "\nIssue loading a line\n" RESET);
+            if (line.length() != 0) {
+                printf(RED "\nIssue loading a line\n" RESET);
+            }
         }
     }
     ifs.close();
@@ -615,7 +618,7 @@ int main()
         else {
             std::string serial_number = get_kinect_serial(device);
             if (!serial_number.empty()) {
-                std::cout << "Device " << i << " SN: " << serial_number << std::endl;
+                std::cout << " Device " << i << " SN: " << serial_number << std::endl;
                 devices.push_back({ device, serial_number });
             }
             else {
@@ -637,7 +640,7 @@ int main()
         // Override the order of the devices  
         std::cout << "Overriding Kinect device order..." << std::endl;  
 
-        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\Temp\\tempCG\\desiredOrder.txt"); // Load the desired order from a file
+        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\Temp\\tempCG\\desiredorderedDevices.txt"); // Load the desired order from a file
 
         // Define the desired order of serial numbers  
         //std::vector<std::string> desiredOrder = {  
@@ -664,10 +667,8 @@ int main()
     std::cout << "Sorted order of devices:" << std::endl;
     for (size_t i = 0; i < devices.size(); i++) {
         devices[i].name = "Kinect_" + std::to_string(i);
-        std::cout << "   Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
+        std::cout << " Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
     }
-
-    
 
     // Start threads for sorted devices
     for (size_t i = 0; i < devices.size(); i++) {
