@@ -20,6 +20,7 @@
 #include<winsock2.h>                // For UDP / TCP
 #include <Ws2tcpip.h>               // For UDP / TCP
 #include <direct.h>
+#include <mutex> 			        // For thread safe logging         
 #include "main.h"
 
 #include<algorithm>
@@ -34,10 +35,6 @@ SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
 int clientCount = 0; // Current number of connected clients
 CRITICAL_SECTION cs; // Critical section for thread safety
 
-int TEMPCOUNTER = -1;
-int TEMPLIMITER = 0; // set to zero for NO LIMIT
-
-
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -47,15 +44,16 @@ int TEMPLIMITER = 0; // set to zero for NO LIMIT
 // Toggle functions
 bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
-bool OVERRIDEKINECTORDER = true; // Override the order of the Kinects. Set to true to override the order of the Kinects
+bool OVERRIDEKINECTORDER = false; // Override the order of the Kinects. Set to true to override the order of the Kinects
 bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
 
 //File to write to
-std::ofstream outputFile("C:\\Temp\\Experiments\\24-10-28\\KinectLog.txt");
+// Make sure directory exists or will error
+std::string outputFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
+std::mutex outputFileMutex;
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
-
 
 SOCKET serverSocket, clientSocket;
 #define BUFFER_SIZE 1024 //Max length of buffer
@@ -77,8 +75,9 @@ std::string get_kinect_serial(k4a_device_t device) {
     }
     return std::string(serial_number);
 }
+
 // Write joint + timestamp to a log file
-void writeToLog(std::string& topic)
+void writeToLog(std::ofstream& outputFile, std::mutex& outputFileMutex, std::string& stringToLog)
 {
     // Get the current time
     auto currentTime = std::chrono::system_clock::now();
@@ -88,14 +87,18 @@ void writeToLog(std::string& topic)
 
     std::string duractionMilliAsString = std::to_string(durationMillis.count());
 
+    // Lock the mutex for thread-safe writing
+    std::lock_guard<std::mutex> lock(outputFileMutex);
+
     // Print to the text file / log
-    outputFile << topic + "," + duractionMilliAsString + "\n";
+    outputFile << duractionMilliAsString + "," + stringToLog + "\n";
 }
 
 // Each Kinect is a class JointFinder.
 class JointFinder {
 public:
-    void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket) {
+    void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket,
+        std::ofstream& outputFile, std::mutex& outputFileMutex) {
         printf("Detecting joints in %d\n", deviceIndex);
 
         uint32_t deviceID = deviceIndex;
@@ -144,11 +147,10 @@ public:
                 captureFrameCount = 0;
             }
 
-            if (RECORDTIMESTAMPS) {
-                std::string eventText = "A,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                writeToLog(eventText);
-            }
-
+            //if (RECORDTIMESTAMPS) {
+            //    std::string eventText = "A,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+            //    writeToLog(eventText);
+            //}
 
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
             {
@@ -196,10 +198,10 @@ public:
             //k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0); // Was set to 0
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
-                if (RECORDTIMESTAMPS) {
-                    std::string eventText = "B,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                    writeToLog(eventText);
-                }
+                //if (RECORDTIMESTAMPS) {
+                //    std::string eventText = "B,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
+                //    writeToLog(eventText);
+                //}
                 // Successfully found a body tracking frame 
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
 
@@ -210,8 +212,9 @@ public:
                     k4abt_frame_get_body_skeleton(body_frame, bodyCounter, &skeleton);
                     uint32_t id = k4abt_frame_get_body_id(body_frame, bodyCounter);
 
-                    // Create a packet for whole skeleton (byte array)
+                    // Create a packet/string for whole skeleton (byte array)
                     std::vector<uint8_t> packet;
+                    std::string skeletonString;
 
                     // Add DEVICEID as a header
                     packet.push_back((deviceID >> 0) & 0xFF); // LSB
@@ -224,28 +227,17 @@ public:
                     // LKTODO create a variable e.g. DoSendMessage that is assumed true
                     bool DoSendMessage = true;
 
+                    if (RECORDTIMESTAMPS) {
+                        skeletonString = "RawPoseEstimation," + std::to_string(deviceID) + "," + get_kinect_serial(openedDevice) + "," + std::to_string(captureFrameCount) + "," + std::to_string(bodyCounter);
+                    }
+
                     // for each joint in the found body
                     for (uint32_t jointCounter = 0; jointCounter < 32; jointCounter++)
                     {
-
                         //LKTODO if (skeleton.joints[jointCounter].position.xyz.z > 2800) {
                         if (skeleton.joints[jointCounter].position.xyz.z > 4400) {
                             DoSendMessage = false;
                         }
-
-                        char str[BUFFER_SIZE];
-                        snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
-                            captureFrameCount,
-                            deviceID,
-                            bodyCounter,
-                            jointCounter,
-                            skeleton.joints[jointCounter].confidence_level,
-                            skeleton.joints[jointCounter].position.xyz.x,
-                            skeleton.joints[jointCounter].position.xyz.y,
-                            skeleton.joints[jointCounter].position.xyz.z/*, 
-                            // rotation is quart so not helpful to print
-                            skeleton.joints[jointCounter].orientation.wxyz.w,*/
-                        );
 
                         int integers[2] = { 
                             jointCounter,
@@ -256,10 +248,6 @@ public:
                         for (int i = 0; i < 2; ++i) {
                             packet.push_back((integers[i] >> 0) & 0xFF); // LSB
                             packet.push_back((integers[i] >> 8) & 0xFF); // MSB
-                            //for (int j = 0; j < sizeof(integers[i]); ++j) {
-
-                            //    packet.push_back((integers[i] >> (j * 8)) & 0xFF);
-                            //}
                         }
 
                         float floats[7] = { 
@@ -269,7 +257,9 @@ public:
                             skeleton.joints[jointCounter].orientation.wxyz.x,
                             skeleton.joints[jointCounter].orientation.wxyz.y,
                             skeleton.joints[jointCounter].orientation.wxyz.z,
-                            skeleton.joints[jointCounter].orientation.wxyz.w
+                            skeleton.joints[jointCounter].orientation.wxyz.w // TODO, SHOULD BE WXYZ. 
+                            //Flip these when demos slow down.
+                            //https://microsoft.github.io/Azure-Kinect-Body-Tracking/release/1.1.x/structk4a__quaternion__t_1_1__wxyz.html#details
                         };
 
                         // Add half-float bytes
@@ -280,39 +270,63 @@ public:
                             }
                         }
 
-                        if (TEMPCOUNTER == -1 && jointCounter == 0) {
-                            // Only print first joint
-                                printf(str);
-                                std::cout << std::endl;
+                        if (RECORDTIMESTAMPS) {
+                            skeletonString +=
+                                std::to_string(jointCounter) + "," +
+                                std::to_string(skeleton.joints[jointCounter].confidence_level) + "," +
+                                std::to_string(skeleton.joints[jointCounter].position.xyz.x) + "," +
+                                std::to_string(skeleton.joints[jointCounter].position.xyz.y) + "," +
+                                std::to_string(skeleton.joints[jointCounter].position.xyz.z) + "," +
+                                std::to_string(skeleton.joints[jointCounter].orientation.wxyz.x) + "," +
+                                std::to_string(skeleton.joints[jointCounter].orientation.wxyz.y) + "," +
+                                std::to_string(skeleton.joints[jointCounter].orientation.wxyz.z) + "," +
+                                std::to_string(skeleton.joints[jointCounter].orientation.wxyz.w);
+                                if (jointCounter != 31) skeletonString += ","; // Add comma except after last joint
                         }
+                        
+                        if (jointCounter == 0) {
+                            char str[BUFFER_SIZE];
+                            snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
+                                captureFrameCount,
+                                deviceID,
+                                bodyCounter,
+                                jointCounter,
+                                skeleton.joints[jointCounter].confidence_level,
+                                skeleton.joints[jointCounter].position.xyz.x,
+                                skeleton.joints[jointCounter].position.xyz.y,
+                                skeleton.joints[jointCounter].position.xyz.z/*,
+                                // rotation is quart so not helpful to print
+                                skeleton.joints[jointCounter].orientation.wxyz.w,*/
+                            );
+                            printf(str);
+                            std::cout << std::endl;
+                        }
+
                     }
 
-                    TEMPCOUNTER++;
-                    if (TEMPCOUNTER >= TEMPLIMITER) {
-                        if (SENDJOINTSVIATCP) {
-                            if (DoSendMessage){
-                                // Broadcast message to all clients
-                                EnterCriticalSection(&cs);
-                                for (int i = 0; i < clientCount; i++) {
-                                    //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                        //Sends whole body as one packet
-                                    printf("Packet size %zd: ", packet.size());
+                    if (SENDJOINTSVIATCP) {
+                        if (DoSendMessage){
+                            // Broadcast message to all clients
+                            EnterCriticalSection(&cs);
+                            for (int i = 0; i < clientCount; i++) {
+                                //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
+                                //Sends whole body as one packet
+                               
+                                printf("Sending Packet size %zd: ", packet.size());
 
-                                    // LKTODO IF statemtent. Check DoSendMessage. If true send if false, ignore
-                                    send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-                                }
-                                LeaveCriticalSection(&cs);
+                                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
                             }
+                            LeaveCriticalSection(&cs);
                         }
-
-
-                        TEMPCOUNTER = -1;
                     }
+                    
+					if (RECORDTIMESTAMPS) {
+						// Write the skeleton string to the log file
+						writeToLog(outputFile, outputFileMutex, skeletonString);
+						skeletonString = ""; // Reset the string for the next body
+					}
                 }
-                if(RECORDTIMESTAMPS) {
-                    std::string eventText = "D,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                    writeToLog(eventText);
-                }
+
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
             }
@@ -493,7 +507,7 @@ void SaveOrderedDevices(const std::vector<KinectDevice>& devices, const std::str
     std::ofstream ofs(filename);
     if (!ofs.is_open()) {
         //std::cerr << "Failed to open " << filename << " for writing." << std::endl;
-        printf(RED "\nFailed to open file for saving\n" RESET);
+        printf(RED "\nFailed to open file for saving. Does folder directory exist.\n" RESET);
         return;
     }
     // Save serial numbers in ascending order
@@ -529,11 +543,43 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
 
 int main()
 {
+    std::ofstream outputFile("C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt");
     if (RECORDTIMESTAMPS) {
         // Check if the file is open
         if (!outputFile.is_open()) {
             std::cerr << "Failed to open the file." << std::endl;
             return 1; // Return an error code
+        }
+
+        // Check if file is empty
+        std::ifstream ifs("C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt");
+        bool isEmpty = ifs.peek() == std::ifstream::traits_type::eof();
+        ifs.close();
+
+        if (isEmpty) {
+
+            std::string jointString = "timestamp, eventID, cameraID, cameraSerialID, FrameNumber,";
+
+            for (int jointIdx = 0; jointIdx < 32; ++jointIdx) {
+                std::string Idx = "joint" + std::to_string(jointIdx);
+                jointString +=
+                    Idx + "," +
+                    Idx + "_conf," +
+                    Idx + "_posx," +
+                    Idx + "_posy," +
+                    Idx + "_posz," +
+                    Idx + "_rotw," +
+                    Idx + "_rotx," +
+                    Idx + "_roty," +
+                    Idx + "_rotz";
+                if (jointIdx != 31) jointString += ","; // Add comma except after last joint
+            }
+            outputFile << jointString << std::endl;
+        }
+        else {
+			printf(YEL "\nFile already exists and is not empty. Will append to file.\n" RESET);
+            std::string toLog = "Starting New Recording";
+            writeToLog(outputFile, outputFileMutex, toLog);
         }
     }
 
@@ -678,7 +724,9 @@ int main()
             &kinectJointFinder,
             static_cast<int>(i),
             devices[i].device,
-            socketToTransmit));
+            socketToTransmit,
+            std::ref(outputFile),
+            std::ref(outputFileMutex)));
     }
 
     // Join threads
