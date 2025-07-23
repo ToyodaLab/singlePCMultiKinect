@@ -45,11 +45,11 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
 bool SENDJOINTSVIATCP = true;       // Send joints via TCP
 bool OVERRIDEKINECTORDER = false; // Override the order of the Kinects. Set to true to override the order of the Kinects
-bool RECORDTIMESTAMPS = false;           // logs timestamps to outputFile
+bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
 
 //File to write to
 // Make sure directory exists or will error
-std::string outputFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
+std::string logFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
 std::mutex outputFileMutex;
 
 const char* pkt = "Message to be sent\n";
@@ -102,6 +102,7 @@ public:
         printf("Detecting joints in %d\n", deviceIndex);
 
         uint32_t deviceID = deviceIndex;
+		std::string deviceSerialID = get_kinect_serial(openedDevice);
 
         int captureFrameCount = 0;
         const int32_t TIMEOUT_IN_MS = 1000;
@@ -228,7 +229,10 @@ public:
                     bool DoSendMessage = true;
 
                     if (RECORDTIMESTAMPS) {
-                        skeletonString = "RawPoseEstimation," + std::to_string(deviceID) + "," + get_kinect_serial(openedDevice) + "," + std::to_string(captureFrameCount) + "," + std::to_string(bodyCounter);
+                        if (deviceSerialID == "") {
+							deviceSerialID = get_kinect_serial(openedDevice);
+                        }
+                        skeletonString = "RawPoseEstimation," + std::to_string(deviceID) + "," + deviceSerialID + "," + std::to_string(captureFrameCount) + "," + std::to_string(bodyCounter);
                     }
 
                     // for each joint in the found body
@@ -543,7 +547,8 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
 
 int main()
 {
-    std::ofstream outputFile("C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt");
+    std::ofstream outputFile(logFilePath, std::ios::app);
+
     if (RECORDTIMESTAMPS) {
         // Check if the file is open
         if (!outputFile.is_open()) {
@@ -552,7 +557,7 @@ int main()
         }
 
         // Check if file is empty
-        std::ifstream ifs("C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt");
+        std::ifstream ifs(logFilePath);
         bool isEmpty = ifs.peek() == std::ifstream::traits_type::eof();
         ifs.close();
 
@@ -578,6 +583,7 @@ int main()
         }
         else {
 			printf(YEL "\nFile already exists and is not empty. Will append to file.\n" RESET);
+            outputFile << std::endl; // force a new line as unlikely last one closed nicely.
             std::string toLog = "Starting New Recording";
             writeToLog(outputFile, outputFileMutex, toLog);
         }
