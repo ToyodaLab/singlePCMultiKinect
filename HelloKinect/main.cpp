@@ -9,7 +9,6 @@
 #include <k4arecord/playback.h>     // For Kinect stuff
 #include <k4a/k4a.h>                // For Kinect stuff
 #include <k4abt.h>                  // For Kinect stuff
-#include <k4arecord/k4arecord_export.h>// For Kinect stuff
 #include <k4arecord/record.h>       // For Kinect stuff
 #include <k4arecord/types.h>        // For Kinect stuff
 #include <stdio.h>                  // For string handling
@@ -41,15 +40,9 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 #define MAG   "\x1B[35m"
 #define RESET "\x1B[0m"
 
-// Toggle functions
-bool OPENCAPTUREFRAMES = false;     // Open Captures as video for debugging. typically set to false.
-bool SENDJOINTSVIATCP = true;       // Send joints via TCP
-bool OVERRIDEKINECTORDER = false; // Override the order of the Kinects. Set to true to override the order of the Kinects
-bool RECORDTIMESTAMPS = true;           // logs timestamps to outputFile
-
 //File to write to
 // Make sure directory exists or will error
-std::string logFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
+//std::string logFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
 std::mutex outputFileMutex;
 
 const char* pkt = "Message to be sent\n";
@@ -98,11 +91,13 @@ void writeToLog(std::ofstream& outputFile, std::mutex& outputFileMutex, std::str
 class JointFinder {
 public:
     void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket,
-        std::ofstream& outputFile, std::mutex& outputFileMutex) {
-        printf("Detecting joints in %d\n", deviceIndex);
+        std::ofstream& outputFile, std::mutex& outputFileMutex,
+        bool RECORDTIMESTAMPS, bool OPENCAPTUREFRAMES, bool SENDJOINTSVIATCP)
+    {
+        printf(GRN "Detecting joints in %d\n" RESET, deviceIndex);
 
         uint32_t deviceID = deviceIndex;
-		std::string deviceSerialID = get_kinect_serial(openedDevice);
+        std::string deviceSerialID = get_kinect_serial(openedDevice);
 
         int captureFrameCount = 0;
         const int32_t TIMEOUT_IN_MS = 1000;
@@ -120,14 +115,14 @@ public:
         // Start capturing from the device
         if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED)
         {
-            printf("Failed to start capturing from the Kinect Azure device");
+            printf(RED "Failed to start capturing from the device" RESET);
         }
-         
+
         // setup sensor calibration
         k4a_calibration_t sensor_calibration;
         if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(openedDevice, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &sensor_calibration))
         {
-            printf("Get depth camera calibration failed!\n");
+            printf(RED "Get depth camera calibration failed!\n" RESET);
         }
 
         // Set up tracker
@@ -135,8 +130,10 @@ public:
         k4abt_tracker_configuration_t tracker_config = K4ABT_TRACKER_CONFIG_DEFAULT;
         if (K4A_RESULT_SUCCEEDED != k4abt_tracker_create(&sensor_calibration, tracker_config, &tracker))
         {
-            printf("Body tracker initialization failed!\n");
+            printf(RED "Body tracker initialization failed!\n" RESET);
         }
+
+        printf(GRN "Device %d: Start processing\n" RESET, deviceIndex);
 
         // run forever
         while (1)
@@ -147,11 +144,6 @@ public:
             if (captureFrameCount == 66534) {
                 captureFrameCount = 0;
             }
-
-            //if (RECORDTIMESTAMPS) {
-            //    std::string eventText = "A,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-            //    writeToLog(eventText);
-            //}
 
             switch (k4a_device_get_capture(openedDevice, &capture, TIMEOUT_IN_MS))
             {
@@ -165,7 +157,7 @@ public:
                     k4a_capture_release(capture);
                 }
                 if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
-                    printf("Failed to restart capturing from the Kinect Azure device");
+                    printf("Failed to restart capturing from the device");
                     goto Exit;
                 }
                 continue;
@@ -177,7 +169,7 @@ public:
                     k4a_capture_release(capture);
                 }
                 if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
-                    printf("Failed to restart capturing from the Kinect Azure device");
+                    printf("Failed to restart capturing from the device");
                     goto Exit;
                 }
                 goto Exit;
@@ -194,15 +186,12 @@ public:
 
             // get body frame from tracker
             k4abt_frame_t body_frame = NULL;
-            
+
+
             k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, K4A_WAIT_INFINITE);
             //k4a_wait_result_t pop_frame_result = k4abt_tracker_pop_result(tracker, &body_frame, 0); // Was set to 0
             if (pop_frame_result == K4A_WAIT_RESULT_SUCCEEDED)
             {
-                //if (RECORDTIMESTAMPS) {
-                //    std::string eventText = "B,Cam" + std::to_string(deviceID) + "," + std::to_string(captureFrameCount);
-                //    writeToLog(eventText);
-                //}
                 // Successfully found a body tracking frame 
                 size_t num_bodies = k4abt_frame_get_num_bodies(body_frame);
 
@@ -230,7 +219,7 @@ public:
 
                     if (RECORDTIMESTAMPS) {
                         if (deviceSerialID == "") {
-							deviceSerialID = get_kinect_serial(openedDevice);
+                            deviceSerialID = get_kinect_serial(openedDevice);
                         }
                         skeletonString = "RawPoseEstimation," + std::to_string(deviceID) + "," + deviceSerialID + "," + std::to_string(captureFrameCount) + "," + std::to_string(bodyCounter);
                     }
@@ -243,9 +232,9 @@ public:
                             DoSendMessage = false;
                         }
 
-                        int integers[2] = { 
+                        int integers[2] = {
                             jointCounter,
-                            skeleton.joints[jointCounter].confidence_level 
+                            skeleton.joints[jointCounter].confidence_level
                         };
 
                         // Add integer bytes. Only two bytes per integer -> up to 65,535 
@@ -254,7 +243,7 @@ public:
                             packet.push_back((integers[i] >> 8) & 0xFF); // MSB
                         }
 
-                        float floats[7] = { 
+                        float floats[7] = {
                             skeleton.joints[jointCounter].position.xyz.x,
                             skeleton.joints[jointCounter].position.xyz.y,
                             skeleton.joints[jointCounter].position.xyz.z,
@@ -285,9 +274,9 @@ public:
                                 std::to_string(skeleton.joints[jointCounter].orientation.wxyz.y) + "," +
                                 std::to_string(skeleton.joints[jointCounter].orientation.wxyz.z) + "," +
                                 std::to_string(skeleton.joints[jointCounter].orientation.wxyz.w);
-                                if (jointCounter != 31) skeletonString += ","; // Add comma except after last joint
+                            if (jointCounter != 31) skeletonString += ","; // Add comma except after last joint
                         }
-                        
+
                         if (jointCounter == 0) {
                             char str[BUFFER_SIZE];
                             snprintf(str, sizeof(str), "%d, %d, %d, %d, %d, %.2f, %.2f, %.2f",
@@ -309,13 +298,13 @@ public:
                     }
 
                     if (SENDJOINTSVIATCP) {
-                        if (DoSendMessage){
+                        if (DoSendMessage) {
                             // Broadcast message to all clients
                             EnterCriticalSection(&cs);
                             for (int i = 0; i < clientCount; i++) {
                                 //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                                 //Sends whole body as one packet
-                               
+
                                 printf("Sending Packet size %zd: ", packet.size());
 
                                 send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
@@ -323,12 +312,12 @@ public:
                             LeaveCriticalSection(&cs);
                         }
                     }
-                    
-					if (RECORDTIMESTAMPS) {
-						// Write the skeleton string to the log file
-						writeToLog(outputFile, outputFileMutex, skeletonString);
-						skeletonString = ""; // Reset the string for the next body
-					}
+
+                    if (RECORDTIMESTAMPS) {
+                        // Write the skeleton string to the log file
+                        writeToLog(outputFile, outputFileMutex, skeletonString);
+                        skeletonString = ""; // Reset the string for the next body
+                    }
                 }
 
                 // release the body frame once you finish using it
@@ -417,7 +406,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
     while (1) {
         memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
         int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
-        if (bytesReceived == SOCKET_ERROR) { 
+        if (bytesReceived == SOCKET_ERROR) {
             //fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
             printf(RED "\nReceive failed or sudden disconnect : %d\n" RESET, WSAGetLastError());
             break;
@@ -434,11 +423,6 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
 
         // Create a new packet to broadcast
         std::vector<uint8_t> packetToTransmit;
-
-        // Copy the good bytes bytes manually using a loop
-        //for (int i = 0; i < packetSendSize; ++i) {
-        //    packetToTransmit.push_back(buffer[i]);
-        //}
 
         // Broadcast message to all clients
         EnterCriticalSection(&cs);
@@ -545,23 +529,56 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
     return desiredOrder;
 }
 
-int main()
+void printHelp() {
+    std::cout << "Usage: HelloKinect [options]\n"
+        << "Options:\n"
+        << "  --onlyGetIDs            Only get Kinect serial IDs and save to file\n"
+        << "  --opencaptureframes     Open capture frames for debugging (slows down processing)\n"
+        << "  --notransmission        Do not send joint data via TCP\n"
+        << "  --desiredorder          Override Kinect order based on desiredorderedDevices.txt\n"
+        << "  --logeverything         Log all timestamps and events\n"
+        << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt)\n"
+        << "  -h, --help              Show this help message\n";
+}
+
+
+int main(int argc, char* argv[])
 {
+    // Default values
+    bool OPENCAPTUREFRAMES = false;
+    bool SENDJOINTSVIATCP = true;
+    bool ONLYGETKINECTSERIALIDS = false;
+    bool OVERRIDEKINECTORDER = false;
+    bool RECORDTIMESTAMPS = false;
+    std::string logFilePath = "C:\\Temp\\tempCG\\KinectLog.txt";
+
+    // Simple command-line parsing
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--onlyGetIDs") ONLYGETKINECTSERIALIDS = true;
+        if (arg == "--opencaptureframes") OPENCAPTUREFRAMES = true;
+        if (arg == "--notransmission") SENDJOINTSVIATCP = false;
+        if (arg == "--desiredorder") OVERRIDEKINECTORDER = true;
+        if (arg == "--logeverything") RECORDTIMESTAMPS = true;
+        if (arg == "--log" && i + 1 < argc) logFilePath = argv[++i];
+        if (arg == "-h" || arg == "--help") printHelp(); return 0;
+    }
+
     std::ofstream outputFile(logFilePath, std::ios::app);
 
     if (RECORDTIMESTAMPS) {
         // Check if the file is open
         if (!outputFile.is_open()) {
-            std::cerr << "Failed to open the file." << std::endl;
+            std::cerr << "Failed to open the file. Likely KinectLog.txt directory does not exist" << std::endl;
             return 1; // Return an error code
         }
 
         // Check if file is empty
         std::ifstream ifs(logFilePath);
-        bool isEmpty = ifs.peek() == std::ifstream::traits_type::eof();
+        bool fileIsEmpty = ifs.peek() == std::ifstream::traits_type::eof();
         ifs.close();
 
-        if (isEmpty) {
+        if (fileIsEmpty) {
 
             std::string jointString = "timestamp, eventID, cameraID, cameraSerialID, FrameNumber,";
 
@@ -582,7 +599,7 @@ int main()
             outputFile << jointString << std::endl;
         }
         else {
-			printf(YEL "\nFile already exists and is not empty. Will append to file.\n" RESET);
+            printf(YEL "\nFile already exists and is not empty. Will append to file.\n" RESET);
             outputFile << std::endl; // force a new line as unlikely last one closed nicely.
             std::string toLog = "Starting New Recording";
             writeToLog(outputFile, outputFileMutex, toLog);
@@ -617,7 +634,7 @@ int main()
         serverAddr.sin_family = AF_INET;
         serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
         serverAddr.sin_port = htons(PORT); // Port number
-        
+
         // Bind the socket
         if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
             fprintf(stderr, "Bind failed: %d\n", WSAGetLastError());
@@ -626,7 +643,7 @@ int main()
             return 1;
         }
 
-       
+
 
         // Start listening for incoming connections
         if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
@@ -684,36 +701,32 @@ int main()
         return a.serial_number < b.serial_number;
         });
 
+    // Save the ascending ordered devices to a file
+    SaveOrderedDevices(devices, "C:\\Temp\\tempCG\\orderedDevices.txt");
+    if (ONLYGETKINECTSERIALIDS) {
+        // only making the file. 
+        printf(YEL "Only creating ascending ordered Kinect serial IDs file \nC:\\Temp\\tempCG\\orderedDevices.txt \nExiting..." RESET);
+        return 0;
+    }
 
-	// Save the ascending ordered devices to a file
-	SaveOrderedDevices(devices, "C:\\Temp\\tempCG\\orderedDevices.txt");
-
-	if (OVERRIDEKINECTORDER) {
+    if (OVERRIDEKINECTORDER) {
         // Override the order of the devices  
-        std::cout << "Overriding Kinect device order..." << std::endl;  
+        std::cout << "Overriding Kinect device order..." << std::endl;
 
         std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\Temp\\tempCG\\desiredorderedDevices.txt"); // Load the desired order from a file
 
-        // Define the desired order of serial numbers  
-        //std::vector<std::string> desiredOrder = {  
-        //    "000435922712",  // set 0
-        //    "000398922712",  // set 1
-        //    "000976922712",  //; set 2
-        //    "001127311512"  // set 3
-        //};  
-   
         // Reorder devices based on the desired order  
-        std::vector<KinectDevice> reorderedDevices;  
-        for (const auto& sn : desiredOrder) {  
-            auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {  
-                return device.serial_number == sn;  
-            });  
-            if (it != devices.end()) {  
-                reorderedDevices.push_back(*it);  
-            }  
-        }  
-        devices = reorderedDevices;  
-	}
+        std::vector<KinectDevice> reorderedDevices;
+        for (const auto& sn : desiredOrder) {
+            auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {
+                return device.serial_number == sn;
+                });
+            if (it != devices.end()) {
+                reorderedDevices.push_back(*it);
+            }
+        }
+        devices = reorderedDevices;
+    }
 
     // Print sorted order
     std::cout << "Sorted order of devices:" << std::endl;
@@ -732,7 +745,11 @@ int main()
             devices[i].device,
             socketToTransmit,
             std::ref(outputFile),
-            std::ref(outputFileMutex)));
+            std::ref(outputFileMutex),
+            RECORDTIMESTAMPS,
+            OPENCAPTUREFRAMES,
+            SENDJOINTSVIATCP
+        ));
     }
 
     // Join threads
@@ -751,8 +768,8 @@ int main()
         closesocket(serverSocket);
         WSACleanup();
     }
-  
-  //HS
+
+    //HS
     for (size_t i = 0; i < devices.size(); i++) {
         k4a_device_stop_cameras(devices[i].device);
         k4a_device_close(devices[i].device);
