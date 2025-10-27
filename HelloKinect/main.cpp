@@ -2,32 +2,24 @@
 // Licensed under the MIT License.
 #include <array>
 #include <iostream>
-#include <map>
 #include <vector>
 #include <thread>
 #include <string>
-#include <k4arecord/playback.h>     // For Kinect stuff
 #include <k4a/k4a.h>                // For Kinect stuff
 #include <k4abt.h>                  // For Kinect stuff
-#include <k4arecord/record.h>       // For Kinect stuff
-#include <k4arecord/types.h>        // For Kinect stuff
 #include <stdio.h>                  // For string handling
-#include <stdlib.h>                 // For string handling
 #include <string.h>                 // For string handling
 #include <fstream>                  // For file operations
 #include <chrono>                   // For timestamps
 #include<winsock2.h>                // For UDP / TCP
 #include <Ws2tcpip.h>               // For UDP / TCP
-#include <direct.h>
 #include <mutex> 			        // For thread safe logging         
+#include <algorithm>
 #include "main.h"
-
-#include<algorithm>
 
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
-#define PORT 8844	//The port on which to listen for incoming data
-//#define PORT 8844	//The port on which to listen for incoming data
+int PORT = 8844;	//The port on which to listen for incoming data
 
 #define MAX_CLIENTS 10
 SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
@@ -398,7 +390,7 @@ public:
     }
 };
 
-// Function to handle communication with the client
+// Handle communication with the client
 DWORD WINAPI ClientHandler(LPVOID lpParam) {
     SOCKET clientSocket = (SOCKET)lpParam;
     char buffer[BUFFER_SIZE];
@@ -449,7 +441,7 @@ DWORD WINAPI ClientHandler(LPVOID lpParam) {
     return 0;
 }
 
-// Function to accept incoming connections in a separate thread
+// Accept incoming connections in a separate thread
 DWORD WINAPI AcceptConnections(LPVOID lpParam) {
     SOCKET serverSocket = (SOCKET)lpParam;
     SOCKET clientSocket;
@@ -489,42 +481,38 @@ DWORD WINAPI AcceptConnections(LPVOID lpParam) {
     return 0;
 }
 
-
-// Save the ordered devices to a file
-void SaveOrderedDevices(const std::vector<KinectDevice>& devices, const std::string& filename) {
-    std::ofstream ofs(filename);
-    if (!ofs.is_open()) {
-        //std::cerr << "Failed to open " << filename << " for writing." << std::endl;
-        printf(RED "\nFailed to open file for saving. Does folder directory exist.\n" RESET);
-        return;
-    }
-    // Save serial numbers in ascending order
-    std::vector<std::string> sns;
-    for (const auto& d : devices) sns.push_back(d.serial_number);
-    std::sort(sns.begin(), sns.end());
-    for (const auto& sn : sns) ofs << sn << std::endl;
-    ofs.close();
-}
-
 // Load the desired order of devices from a file
 std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
     std::vector<std::string> desiredOrder;
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
-        printf(RED "\nFailed to file for reading\n" RESET);
-        return desiredOrder; // will be length 0
+        printf(RED "\nFailed to open desired order file for reading: %s\n" RESET, filename.c_str());
+        return desiredOrder; // empty
     }
+
     std::string line;
     while (std::getline(ifs, line)) {
-        if (!line.empty()) {
-            desiredOrder.push_back(line);
+        if (line.empty()) continue; // skip blank lines
+
+        printf("Parsing room file camera: ");
+        printf(line.c_str());
+        printf("\n");
+
+        // first CSV field (data is clean; first value is the serial)
+        std::string firstField;
+        size_t comma = line.find(',');
+        if (comma == std::string::npos) firstField = line;
+        else firstField = line.substr(0, comma);
+
+        // Validate: must be exactly 11 alphanumeric characters
+        if (firstField.size() == 11) {
+            desiredOrder.push_back(firstField);
         }
         else {
-            if (line.length() != 0) {
-                printf(RED "\nIssue loading a line\n" RESET);
-            }
+            printf(YEL "\nSkipping invalid serial in desired order file: '%s'\n" RESET, firstField.c_str());
         }
     }
+
     ifs.close();
     return desiredOrder;
 }
@@ -532,10 +520,9 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
 void printHelp() {
     std::cout << "Usage: HelloKinect [options]\n"
         << "Options:\n"
-        << "  --onlyGetIDs            Only get Kinect serial IDs and save to file\n"
         << "  --opencaptureframes     Open capture frames for debugging (slows down processing)\n"
-        << "  --notransmission        Do not send joint data via TCP\n"
         << "  --desiredorder          Override Kinect order based on desiredorderedDevices.txt\n"
+        << "  --roomName <roomname>   Name of room file to load IDs from\n"
         << "  --logeverything         Log all timestamps and events\n"
         << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt)\n"
         << "  -h, --help              Show this help message\n";
@@ -544,27 +531,47 @@ void printHelp() {
 
 int main(int argc, char* argv[])
 {
+    printf(YEL "\nHelloDevice Version: 1.1 \n" RESET);
+    printf(YEL "Use -h to see executable parameters.\n" RESET);
+
     // Default values
     bool OPENCAPTUREFRAMES = false;
     bool SENDJOINTSVIATCP = true;
-    bool ONLYGETKINECTSERIALIDS = false;
-    bool OVERRIDEKINECTORDER = false;
+    bool OVERRIDEDEVICEORDER = true;
     bool RECORDTIMESTAMPS = false;
-    std::string logFilePath = "C:\\Temp\\tempCG\\KinectLog.txt";
+    std::string ROOMNAME = "LKTest";
+    std::string LOGFILEPATH = "C:\\Temp\\tempCG\\KinectLog.txt";
 
     // Simple command-line parsing
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--onlyGetIDs") ONLYGETKINECTSERIALIDS = true;
         if (arg == "--opencaptureframes") OPENCAPTUREFRAMES = true;
-        if (arg == "--notransmission") SENDJOINTSVIATCP = false;
-        if (arg == "--desiredorder") OVERRIDEKINECTORDER = true;
+        if (arg == "--desiredorder") OVERRIDEDEVICEORDER = true;
+        if (arg == "--roomName" && i + 1 < argc) ROOMNAME = argv[++i];
         if (arg == "--logeverything") RECORDTIMESTAMPS = true;
-        if (arg == "--log" && i + 1 < argc) logFilePath = argv[++i];
-        if (arg == "-h" || arg == "--help") printHelp(); return 0;
+        if (arg == "--log" && i + 1 < argc) LOGFILEPATH = argv[++i];
+        if (arg == "-h" || arg == "--help") printHelp();
+        if (arg == "--port" && i + 1 < argc) { // requires more robust checking
+            try {
+                int p = std::stoi(argv[++i]); // parse next arg as integer
+                if (p > 0 && p <= 65535) {
+                    PORT = p;
+                }
+                else {
+                    fprintf(stderr, "Invalid port number: %d (must be 1-65535)\n", p);
+                    return 1;
+                }
+            }
+            catch (const std::exception&) {
+                fprintf(stderr, "Invalid port value: '%s'\n", argv[i]);
+                return -1;
+            }
+            return 0;
+        }
     }
 
-    std::ofstream outputFile(logFilePath, std::ios::app);
+    // TODO fix logpath default and directory creation
+    std::ofstream outputFile(LOGFILEPATH, std::ios::app);
 
     if (RECORDTIMESTAMPS) {
         // Check if the file is open
@@ -574,7 +581,7 @@ int main(int argc, char* argv[])
         }
 
         // Check if file is empty
-        std::ifstream ifs(logFilePath);
+        std::ifstream ifs(LOGFILEPATH);
         bool fileIsEmpty = ifs.peek() == std::ifstream::traits_type::eof();
         ifs.close();
 
@@ -643,8 +650,6 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-
-
         // Start listening for incoming connections
         if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
             fprintf(stderr, "Listen failed: %d\n", WSAGetLastError());
@@ -701,19 +706,16 @@ int main(int argc, char* argv[])
         return a.serial_number < b.serial_number;
         });
 
-    // Save the ascending ordered devices to a file
-    SaveOrderedDevices(devices, "C:\\Temp\\tempCG\\orderedDevices.txt");
-    if (ONLYGETKINECTSERIALIDS) {
-        // only making the file. 
-        printf(YEL "Only creating ascending ordered Kinect serial IDs file \nC:\\Temp\\tempCG\\orderedDevices.txt \nExiting..." RESET);
-        return 0;
-    }
-
-    if (OVERRIDEKINECTORDER) {
+    if (OVERRIDEDEVICEORDER) {
         // Override the order of the devices  
-        std::cout << "Overriding Kinect device order..." << std::endl;
+        std::cout << "Use roomname calibration file to override device order..." << std::endl;
 
-        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\Temp\\tempCG\\desiredorderedDevices.txt"); // Load the desired order from a file
+        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt"); // Load the desired order from a file
+
+        if(desiredOrder.size() != device_count) {
+            std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
+            return -1;
+		}   
 
         // Reorder devices based on the desired order  
         std::vector<KinectDevice> reorderedDevices;
@@ -731,14 +733,14 @@ int main(int argc, char* argv[])
     // Print sorted order
     std::cout << "Sorted order of devices:" << std::endl;
     for (size_t i = 0; i < devices.size(); i++) {
-        devices[i].name = "Kinect_" + std::to_string(i);
+        devices[i].name = "Device_" + std::to_string(i);
         std::cout << " Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
     }
 
     // Start threads for sorted devices
     for (size_t i = 0; i < devices.size(); i++) {
         JointFinder kinectJointFinder;
-        std::cerr << "Starting thread for Kinect device SN: " << devices[i].serial_number << std::endl;
+        std::cerr << "Starting thread for Device with serial number: " << devices[i].serial_number << std::endl;
         workers.push_back(std::thread(&JointFinder::DetectJoints,
             &kinectJointFinder,
             static_cast<int>(i),
