@@ -494,7 +494,7 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
     while (std::getline(ifs, line)) {
         if (line.empty()) continue; // skip blank lines
 
-        printf("Parsing room file camera: ");
+        printf("Parsing room file current line: ");
         printf(line.c_str());
         printf("\n");
 
@@ -531,8 +531,8 @@ void printHelp() {
 
 int main(int argc, char* argv[])
 {
-    printf(YEL "\nHelloDevice Version: 1.1 \n" RESET);
-    printf(YEL "Use -h to see executable parameters.\n" RESET);
+    printf("HelloDevice Version: 1.2 \n" RESET);
+    printf("Use -h to see executable parameters.\n" RESET);
 
     // Default values
     bool OPENCAPTUREFRAMES = false;
@@ -545,30 +545,81 @@ int main(int argc, char* argv[])
     // Simple command-line parsing
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--opencaptureframes") OPENCAPTUREFRAMES = true;
-        if (arg == "--desiredorder") OVERRIDEDEVICEORDER = true;
-        if (arg == "--roomName" && i + 1 < argc) ROOMNAME = argv[++i];
-        if (arg == "--logeverything") RECORDTIMESTAMPS = true;
-        if (arg == "--log" && i + 1 < argc) LOGFILEPATH = argv[++i];
-        if (arg == "-h" || arg == "--help") printHelp();
-        if (arg == "--port" && i + 1 < argc) { // requires more robust checking
-            try {
-                int p = std::stoi(argv[++i]); // parse next arg as integer
-                if (p > 0 && p <= 65535) {
-                    PORT = p;
-                }
-                else {
-                    fprintf(stderr, "Invalid port number: %d (must be 1-65535)\n", p);
-                    return 1;
-                }
+
+        if (arg == "--opencaptureframes") {
+            OPENCAPTUREFRAMES = true;
+        }
+        else if (arg == "--desiredorder") {
+            OVERRIDEDEVICEORDER = true;
+        }
+        // Support --roomname=<value>
+        else if (arg.rfind("--roomname=", 0) == 0) {
+            ROOMNAME = arg.substr(sizeof("--roomname=") - 1);
+        }
+        // Support --roomname <value>
+        else if (arg == "--roomname") {
+            if (i + 1 < argc) {
+                ROOMNAME = argv[++i];
             }
-            catch (const std::exception&) {
-                fprintf(stderr, "Invalid port value: '%s'\n", argv[i]);
-                return -1;
+            else {
+                fprintf(stderr, "Missing value for --roomname\n");
+                return 1;
             }
+        }
+        else if (arg == "--logeverything") {
+            RECORDTIMESTAMPS = true;
+        }
+        else if (arg == "--log") {
+            if (i + 1 < argc) {
+                LOGFILEPATH = argv[++i];
+            }
+            else {
+                fprintf(stderr, "Missing value for --log\n");
+                return 1;
+            }
+        }
+        else if (arg == "-h" || arg == "--help") {
+            printHelp();
             return 0;
         }
+        else if (arg == "--port") {
+            if (i + 1 < argc) {
+                try {
+                    int p = std::stoi(argv[++i]); // parse next arg as integer
+                    if (p > 0 && p <= 65535) {
+                        PORT = p;
+                    }
+                    else {
+                        fprintf(stderr, "Invalid port number: %d (must be 1-65535)\n", p);
+                        return 1;
+                    }
+                }
+                catch (const std::exception&) {
+                    fprintf(stderr, "Invalid port value: '%s'\n", argv[i]);
+                    return -1;
+                }
+            }
+            else {
+                fprintf(stderr, "Missing value for --port\n");
+                return 1;
+            }
+        }
+        // unknown args are ignored silently (preserve existing behavior)
     }
+
+    printf("\n----------------------\n");
+    printf("Start Input Parameters\n");
+    printf("----------------------\n\n");
+	printf(YEL "Room name = %s\n" RESET, ROOMNAME.c_str());
+	printf("Port Number: %d\n", PORT);
+    printf("Open capture frames = %s\n", OPENCAPTUREFRAMES ? "true" : "false");
+    printf("Setting desired order = %s\n", OVERRIDEDEVICEORDER ? "true" : "false");
+	printf("Logging timestamps = %s\n", RECORDTIMESTAMPS ? "true" : "false");
+	printf("Log file path (if using) = %s\n", LOGFILEPATH.c_str());
+
+    printf("\n----------------------\n");
+    printf("End Input Parameters\n");
+    printf("----------------------\n\n");
 
     // TODO fix logpath default and directory creation
     std::ofstream outputFile(LOGFILEPATH, std::ios::app);
@@ -708,8 +759,6 @@ int main(int argc, char* argv[])
 
     if (OVERRIDEDEVICEORDER) {
         // Override the order of the devices  
-        std::cout << "Use roomname calibration file to override device order..." << std::endl;
-
         std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt"); // Load the desired order from a file
 
         if(desiredOrder.size() != device_count) {
