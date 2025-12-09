@@ -505,7 +505,7 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
         else firstField = line.substr(0, comma);
 
         // Validate: must be exactly 11 alphanumeric characters
-        if (firstField.size() == 11) {
+        if (firstField.size() >= 11 && firstField.size() <= 12) {
             desiredOrder.push_back(firstField);
         }
         else {
