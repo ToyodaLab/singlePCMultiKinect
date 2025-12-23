@@ -16,6 +16,7 @@
 #include <mutex> 			        // For thread safe logging         
 #include <algorithm>
 #include "main.h"
+#include "Watchdog.h"
 
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
@@ -36,6 +37,9 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 // Make sure directory exists or will error
 //std::string logFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
 std::mutex outputFileMutex;
+
+// Global watchdog pointer for heartbeat calls from worker threads
+Watchdog* g_watchdog = nullptr;
 
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
@@ -84,7 +88,8 @@ class JointFinder {
 public:
     void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket,
         std::ofstream& outputFile, std::mutex& outputFileMutex,
-        bool RECORDTIMESTAMPS, bool OPENCAPTUREFRAMES, bool SENDJOINTSVIATCP)
+        bool RECORDTIMESTAMPS, bool OPENCAPTUREFRAMES, bool SENDJOINTSVIATCP,
+        int stressHangAfterFrames = 0)
     {
         printf(GRN "Detecting joints in %d\n" RESET, deviceIndex);
 
@@ -130,6 +135,19 @@ public:
         // run forever
         while (1)
         {
+            // Signal watchdog that this thread is alive
+            if (g_watchdog) {
+                Watchdog::heartbeat(deviceIndex);
+            }
+
+            // Stress test: simulate hang after N frames
+            if (stressHangAfterFrames > 0 && captureFrameCount >= stressHangAfterFrames) {
+                printf(YEL "[STRESS TEST] Device %d: Simulating hang at frame %d (infinite sleep)\n" RESET, deviceIndex, captureFrameCount);
+                while (1) {
+                    Sleep(60000);  // Sleep forever - watchdog should detect and restart
+                }
+            }
+
             k4a_image_t image;
             //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
             captureFrameCount++;
@@ -505,7 +523,7 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
         else firstField = line.substr(0, comma);
 
         // Validate: must be exactly 11 alphanumeric characters
-        if (firstField.size() == 11) {
+        if (firstField.size() >= 11 && firstField.size() <= 12) {
             desiredOrder.push_back(firstField);
         }
         else {
@@ -524,13 +542,19 @@ void printHelp() {
         << "  --desiredorder          Override Kinect order based on desiredorderedDevices.txt\n"
         << "  --roomName <roomname>   Name of room file to load IDs from\n"
         << "  --logeverything         Log all timestamps and events\n"
-        << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt)\n"
+        << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\KinectLog.txt)\n"
+        << "  --port <port>           TCP server port (default: 8844)\n"
+        << "  --stress-hang <frames>  [TEST] Simulate hang after N frames to test watchdog\n"
         << "  -h, --help              Show this help message\n";
 }
 
 
 int main(int argc, char* argv[])
 {
+    // Brief delay to allow previous process to fully release resources (port, devices)
+    // This is needed when restarting via watchdog
+    Sleep(3000);
+
     printf("HelloDevice Version: 1.2 \n" RESET);
     printf("Use -h to see executable parameters.\n" RESET);
 
@@ -541,6 +565,9 @@ int main(int argc, char* argv[])
     bool RECORDTIMESTAMPS = false;
     std::string ROOMNAME = "LKTest";
     std::string LOGFILEPATH = "C:\\Temp\\tempCG\\KinectLog.txt";
+
+    // Stress test options (for testing watchdog)
+    int STRESS_HANG_AFTER_FRAMES = 0;  // 0 = disabled, >0 = hang after N frames
 
     // Simple command-line parsing
     for (int i = 1; i < argc; ++i) {
@@ -604,6 +631,23 @@ int main(int argc, char* argv[])
                 return 1;
             }
         }
+        else if (arg == "--stress-hang") {
+            // Stress test: simulate hang after N frames (for testing watchdog)
+            if (i + 1 < argc) {
+                try {
+                    STRESS_HANG_AFTER_FRAMES = std::stoi(argv[++i]);
+                    printf(YEL "[STRESS TEST] Will simulate hang after %d frames\n" RESET, STRESS_HANG_AFTER_FRAMES);
+                }
+                catch (const std::exception&) {
+                    fprintf(stderr, "Invalid value for --stress-hang: '%s'\n", argv[i]);
+                    return 1;
+                }
+            }
+            else {
+                fprintf(stderr, "Missing value for --stress-hang\n");
+                return 1;
+            }
+        }
         // unknown args are ignored silently (preserve existing behavior)
     }
 
@@ -620,6 +664,10 @@ int main(int argc, char* argv[])
     printf("\n----------------------\n");
     printf("End Input Parameters\n");
     printf("----------------------\n\n");
+
+    // Initialize watchdog for auto-restart on crashes/hangs
+    Watchdog watchdog(argc, argv);
+    g_watchdog = &watchdog;
 
     // TODO fix logpath default and directory creation
     std::ofstream outputFile(LOGFILEPATH, std::ios::app);
@@ -687,6 +735,10 @@ int main(int argc, char* argv[])
             WSACleanup();
             return 1;
         }
+
+        // Allow reusing the port immediately after restart (avoids "Bind failed: 10048")
+        int optval = 1;
+        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
 
         // Define server address
         serverAddr.sin_family = AF_INET;
@@ -790,6 +842,10 @@ int main(int argc, char* argv[])
     for (size_t i = 0; i < devices.size(); i++) {
         JointFinder kinectJointFinder;
         std::cerr << "Starting thread for Device with serial number: " << devices[i].serial_number << std::endl;
+
+        // Register worker with watchdog before starting thread
+        watchdog.registerWorker(i);
+
         workers.push_back(std::thread(&JointFinder::DetectJoints,
             &kinectJointFinder,
             static_cast<int>(i),
@@ -799,9 +855,13 @@ int main(int argc, char* argv[])
             std::ref(outputFileMutex),
             RECORDTIMESTAMPS,
             OPENCAPTUREFRAMES,
-            SENDJOINTSVIATCP
+            SENDJOINTSVIATCP,
+            STRESS_HANG_AFTER_FRAMES
         ));
     }
+
+    // Start watchdog monitoring after all workers are registered
+    watchdog.start();
 
     // Join threads
     for (size_t i = 0; i < workers.size(); i++) {
@@ -812,6 +872,10 @@ int main(int argc, char* argv[])
             printf("join() error log: %s\n", ex.what());
         }
     }
+
+    // Stop watchdog before cleanup
+    watchdog.stop();
+    g_watchdog = nullptr;
 
     if (SENDJOINTSVIATCP) {
         // Close sockets and clean up

@@ -363,3 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 /HelloKinect/dnn_model_2_0_lite_op11.onnx
 /HelloKinect/dnn_model_2_0_op11.onnx
+
+.claude
+CLAUDE.md
