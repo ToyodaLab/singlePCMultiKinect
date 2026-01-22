@@ -1,6 +1,5 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
-#include <array>
 #include <iostream>
 #include <vector>
 #include <thread>
@@ -8,25 +7,13 @@
 #include <k4a/k4a.h>                // For Kinect stuff
 #include <k4abt.h>                  // For Kinect stuff
 #include <stdio.h>                  // For string handling
-#include <string.h>                 // For string handling
 #include <fstream>                  // For file operations
 #include <chrono>                   // For timestamps
-#include<winsock2.h>                // For UDP / TCP
-#include <Ws2tcpip.h>               // For UDP / TCP
 #include <mutex> 			        // For thread safe logging         
 #include <algorithm>
 #include "main.h"
 #include "Watchdog.h"
 #include "ZenohPublisher.h"
-
-#pragma comment(lib,"ws2_32.lib")   //Winsock Library
-
-int PORT = 8844;	//The port on which to listen for incoming data
-
-#define MAX_CLIENTS 10
-SOCKET clientSockets[MAX_CLIENTS]; // Array to hold client sockets
-int clientCount = 0; // Current number of connected clients
-CRITICAL_SECTION cs; // Critical section for thread safety
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -34,9 +21,6 @@ CRITICAL_SECTION cs; // Critical section for thread safety
 #define MAG   "\x1B[35m"
 #define RESET "\x1B[0m"
 
-//File to write to
-// Make sure directory exists or will error
-//std::string logFilePath = "C:\\Temp\\tempCG\\23-07-25\\KinectLog.txt";
 std::mutex outputFileMutex;
 
 // Global watchdog pointer for heartbeat calls from worker threads
@@ -45,11 +29,7 @@ Watchdog* g_watchdog = nullptr;
 // Global pointer used by worker threads to publish (set in main())
 ZenohPublisher* g_zenoh = nullptr;
 
-const char* pkt = "Message to be sent\n";
-sockaddr_in dest;
-
-SOCKET serverSocket, clientSocket;
-#define BUFFER_SIZE 1024 //Max length of buffer
+#define BUFFER_SIZE 1024 // kept for internal formatting/log buffers if needed
 
 struct KinectDevice {
     k4a_device_t device;
@@ -89,9 +69,10 @@ void writeToLog(std::ofstream& outputFile, std::mutex& outputFileMutex, std::str
 // Each Kinect is a class JointFinder.
 class JointFinder {
 public:
-    void DetectJoints(int deviceIndex, k4a_device_t openedDevice, SOCKET boundSocket,
+    // Removed TCP socket param; we only publish via Zenoh now.
+    void DetectJoints(int deviceIndex, k4a_device_t openedDevice,
         std::ofstream& outputFile, std::mutex& outputFileMutex,
-        bool RECORDTIMESTAMPS, bool OPENCAPTUREFRAMES, bool SENDJOINTSVIATCP,
+        bool RECORDTIMESTAMPS,
         int stressHangAfterFrames = 0)
     {
         printf(GRN "Detecting joints in %d\n" RESET, deviceIndex);
@@ -105,7 +86,7 @@ public:
 
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
         //config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
@@ -162,27 +143,12 @@ public:
             case K4A_WAIT_RESULT_SUCCEEDED:
                 break;
             case K4A_WAIT_RESULT_TIMEOUT:
-                printf("Timed out waiting for a capture. Restarting capture...\n");
-                k4a_device_stop_cameras(openedDevice);
-                if (capture != NULL)
-                {
-                    k4a_capture_release(capture);
-                }
-                if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
-                    printf("Failed to restart capturing from the device");
-                    goto Exit;
-                }
-                continue;
             case K4A_WAIT_RESULT_FAILED:
                 printf("Failed to read a capture\n");
                 k4a_device_stop_cameras(openedDevice);
-                if (capture != NULL)
-                {
-                    k4a_capture_release(capture);
-                }
+                if (capture != NULL) { k4a_capture_release(capture); }
                 if (k4a_device_start_cameras(openedDevice, &config) != K4A_RESULT_SUCCEEDED) {
                     printf("Failed to restart capturing from the device");
-                    goto Exit;
                 }
                 goto Exit;
             }
@@ -245,7 +211,7 @@ public:
                         }
 
                         int integers[2] = {
-                            jointCounter,
+                            static_cast<int>(jointCounter),
                             skeleton.joints[jointCounter].confidence_level
                         };
 
@@ -299,40 +265,20 @@ public:
                                 skeleton.joints[jointCounter].confidence_level,
                                 skeleton.joints[jointCounter].position.xyz.x,
                                 skeleton.joints[jointCounter].position.xyz.y,
-                                skeleton.joints[jointCounter].position.xyz.z/*,
-                                // rotation is quart so not helpful to print
-                                skeleton.joints[jointCounter].orientation.wxyz.w,*/
+                                skeleton.joints[jointCounter].position.xyz.z
                             );
                             printf(str);
                             std::cout << std::endl;
                         }
-
                     }
 
+                    if (DoSendMessage) {
+                        if (g_zenoh && g_zenoh->isActive()) {
+                            printf("ZenohPrint: ");
 
-                    // ALSO: publish the same payload via Zenoh (once per skeleton packet)
-                    if (g_zenoh && g_zenoh->isActive()) {
-                        if (!g_zenoh->publish(packet)) {
-                            std::cerr << "[Zenoh] publish failed for skeleton packet\n";
-                        }
-                        else {
-                            printf("Sending Zenoh Packet size %zd: ", packet.size());
-                        }
-                    }
-
-                    if (SENDJOINTSVIATCP) {
-                        if (DoSendMessage) {
-                            // Broadcast message to all clients
-                            EnterCriticalSection(&cs);
-                            for (int i = 0; i < clientCount; i++) {
-                                //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                                //Sends whole body as one packet
-
-                                send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
-                                
-                            
+                            if (!g_zenoh->publish(packet)) {
+                                std::cerr << "[Zenoh] publish failed for skeleton packet\n";
                             }
-                            LeaveCriticalSection(&cs);
                         }
                     }
 
@@ -345,25 +291,6 @@ public:
 
                 // release the body frame once you finish using it
                 k4abt_frame_release(body_frame);
-            }
-
-            if (OPENCAPTUREFRAMES)
-            {
-                // Probe for a color image
-                image = k4a_capture_get_color_image(capture);
-                if (image)
-                {
-                    printf(" %d | Color res:%4dx%4d stride:%5d ",
-                        deviceID,
-                        k4a_image_get_height_pixels(image),
-                        k4a_image_get_width_pixels(image),
-                        k4a_image_get_stride_bytes(image));
-                    k4a_image_release(image);
-                }
-                else
-                {
-                    printf(" | Color None");
-                }
             }
 
             // release capture
@@ -421,98 +348,6 @@ public:
     }
 };
 
-// Handle communication with the client
-DWORD WINAPI ClientHandler(LPVOID lpParam) {
-    SOCKET clientSocket = (SOCKET)lpParam;
-    char buffer[BUFFER_SIZE];
-
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE); // Clear the buffer
-        int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
-        if (bytesReceived == SOCKET_ERROR) {
-            //fprintf(stderr, "\nReceive failed: %d\n", WSAGetLastError());
-            printf(RED "\nReceive failed or sudden disconnect : %d\n" RESET, WSAGetLastError());
-            break;
-        }
-        else if (bytesReceived == 0) {
-            printf(RED "\nClient disconnected.\n" RESET);
-            break;
-        }
-
-        // What is the recieved event
-        int thisevent = (buffer[1] << 8) | buffer[0];
-        // What is the total packet size
-        int packetSendSize = (buffer[3] << 8) | buffer[2];
-
-        // Create a new packet to broadcast
-        std::vector<uint8_t> packetToTransmit;
-
-        // Broadcast message to all clients
-        EnterCriticalSection(&cs);
-        for (int i = 0; i < clientCount; i++) {
-            if (clientSockets[i] != clientSocket) { // Don't send back to the sender
-                //send(clientSockets[i], buffer, bytesReceived, 0);
-                send(clientSockets[i], reinterpret_cast<const char*>(buffer), packetSendSize, 0);
-            }
-        }
-        LeaveCriticalSection(&cs);
-    }
-
-    // Remove the client socket from the list and close it
-    EnterCriticalSection(&cs);
-    for (int i = 0; i < clientCount; i++) {
-        if (clientSockets[i] == clientSocket) {
-            clientSockets[i] = clientSockets[--clientCount]; // Replace with last client
-            break;
-        }
-    }
-    LeaveCriticalSection(&cs);
-
-    closesocket(clientSocket);
-    return 0;
-}
-
-// Accept incoming connections in a separate thread
-DWORD WINAPI AcceptConnections(LPVOID lpParam) {
-    SOCKET serverSocket = (SOCKET)lpParam;
-    SOCKET clientSocket;
-    struct sockaddr_in clientAddr;
-    int addrLen = sizeof(clientAddr);
-
-    while (1) {
-        clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen);
-        if (clientSocket == INVALID_SOCKET) {
-            fprintf(stderr, "Accept failed: %d\n", WSAGetLastError());
-            continue; // Continue accepting other clients
-        }
-
-        printf("\n%sClient connected!%s\n", "\033[32m", "\033[0m");
-
-        // Add the client socket to the list
-        EnterCriticalSection(&cs);
-        if (clientCount < MAX_CLIENTS) {
-            clientSockets[clientCount++] = clientSocket; // Add the new client
-        }
-        else {
-            printf(RED "\nMax clients reached. Connection refused.\n" RESET);
-            closesocket(clientSocket); // Reject connection
-        }
-        LeaveCriticalSection(&cs);
-
-        // Create a thread to handle the client
-        HANDLE threadHandle = CreateThread(NULL, 0, ClientHandler, (LPVOID)clientSocket, 0, NULL);
-        if (threadHandle == NULL) {
-            fprintf(stderr, "Failed to create thread: %d\n", GetLastError());
-            closesocket(clientSocket); // Close the socket if thread creation failed
-        }
-        else {
-            CloseHandle(threadHandle); // Close the thread handle in the main thread
-        }
-    }
-    return 0;
-}
-
-// Load the desired order of devices from a file
 std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
     std::vector<std::string> desiredOrder;
     std::ifstream ifs(filename);
@@ -551,12 +386,9 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
 void printHelp() {
     std::cout << "Usage: HelloKinect [options]\n"
         << "Options:\n"
-        << "  --opencaptureframes     Open capture frames for debugging (slows down processing)\n"
-        << "  --desiredorder          Override Kinect order based on desiredorderedDevices.txt\n"
         << "  --roomName <roomname>   Name of room file to load IDs from\n"
         << "  --logeverything         Log all timestamps and events\n"
         << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\KinectLog.txt)\n"
-        << "  --port <port>           TCP server port (default: 8844)\n"
         << "  --stress-hang <frames>  [TEST] Simulate hang after N frames to test watchdog\n"
         << "  -h, --help              Show this help message\n";
 }
@@ -571,10 +403,6 @@ int main(int argc, char* argv[])
     printf("HelloDevice Version: 1.2 \n" RESET);
     printf("Use -h to see executable parameters.\n" RESET);
 
-    // Default values
-    bool OPENCAPTUREFRAMES = false;
-    bool SENDJOINTSVIATCP = true;
-    bool OVERRIDEDEVICEORDER = true;
     bool RECORDTIMESTAMPS = false;
     std::string ROOMNAME = "OneCam";
     std::string LOGFILEPATH = "C:\\Temp\\tempCG\\KinectLog.txt";
@@ -586,14 +414,8 @@ int main(int argc, char* argv[])
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
 
-        if (arg == "--opencaptureframes") {
-            OPENCAPTUREFRAMES = true;
-        }
-        else if (arg == "--desiredorder") {
-            OVERRIDEDEVICEORDER = true;
-        }
         // Support --roomname=<value>
-        else if (arg.rfind("--roomname=", 0) == 0) {
+        if (arg.rfind("--roomname=", 0) == 0) {
             ROOMNAME = arg.substr(sizeof("--roomname=") - 1);
         }
         // Support --roomname <value>
@@ -622,30 +444,7 @@ int main(int argc, char* argv[])
             printHelp();
             return 0;
         }
-        else if (arg == "--port") {
-            if (i + 1 < argc) {
-                try {
-                    int p = std::stoi(argv[++i]); // parse next arg as integer
-                    if (p > 0 && p <= 65535) {
-                        PORT = p;
-                    }
-                    else {
-                        fprintf(stderr, "Invalid port number: %d (must be 1-65535)\n", p);
-                        return 1;
-                    }
-                }
-                catch (const std::exception&) {
-                    fprintf(stderr, "Invalid port value: '%s'\n", argv[i]);
-                    return -1;
-                }
-            }
-            else {
-                fprintf(stderr, "Missing value for --port\n");
-                return 1;
-            }
-        }
         else if (arg == "--stress-hang") {
-            // Stress test: simulate hang after N frames (for testing watchdog)
             if (i + 1 < argc) {
                 try {
                     STRESS_HANG_AFTER_FRAMES = std::stoi(argv[++i]);
@@ -661,21 +460,15 @@ int main(int argc, char* argv[])
                 return 1;
             }
         }
-        // unknown args are ignored silently (preserve existing behavior)
+        // unknown args are ignored silently
     }
 
     printf("\n----------------------\n");
     printf("Start Input Parameters\n");
     printf("----------------------\n\n");
-	printf(YEL "Room name = %s\n" RESET, ROOMNAME.c_str());
-	printf("Port Number: %d\n", PORT);
-    printf("Open capture frames = %s\n", OPENCAPTUREFRAMES ? "true" : "false");
-    printf("Setting desired order = %s\n", OVERRIDEDEVICEORDER ? "true" : "false");
-	printf("Logging timestamps = %s\n", RECORDTIMESTAMPS ? "true" : "false");
-	printf("Log file path (if using) = %s\n", LOGFILEPATH.c_str());
-
-    printf("\n----------------------\n");
-    printf("End Input Parameters\n");
+    printf(YEL "Room name = %s\n" RESET, ROOMNAME.c_str());
+    printf("Logging timestamps = %s\n", RECORDTIMESTAMPS ? "true" : "false");
+    printf("Log file path (if using) = %s\n", LOGFILEPATH.c_str());
     printf("----------------------\n\n");
 
     // Initialize watchdog for auto-restart on crashes/hangs
@@ -725,78 +518,13 @@ int main(int argc, char* argv[])
         }
     }
 
-    SOCKET socketToTransmit = NULL;
-
-    if (SENDJOINTSVIATCP) {
-        WSADATA wsaData;
-        SOCKET serverSocket;
-        struct sockaddr_in serverAddr;
-
-        // Initialize Winsock
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            fprintf(stderr, "WSAStartup failed: %d\n", WSAGetLastError());
-            return 1;
-        }
-
-        // Create a critical section for thread safety
-        InitializeCriticalSection(&cs);
-
-        // Create a socket
-        serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-        if (serverSocket == INVALID_SOCKET) {
-            fprintf(stderr, "Socket creation failed: %d\n", WSAGetLastError());
-            WSACleanup();
-            return 1;
-        }
-
-        // Allow reusing the port immediately after restart (avoids "Bind failed: 10048")
-        int optval = 1;
-        setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&optval, sizeof(optval));
-
-        // Define server address
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on all interfaces
-        serverAddr.sin_port = htons(PORT); // Port number
-
-        // Bind the socket
-        if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-            fprintf(stderr, "Bind failed: %d\n", WSAGetLastError());
-            closesocket(serverSocket);
-            WSACleanup();
-            return 1;
-        }
-
-        // Start listening for incoming connections
-        if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
-            fprintf(stderr, "Listen failed: %d\n", WSAGetLastError());
-            closesocket(serverSocket);
-            WSACleanup();
-            return 1;
-        }
-
-        printf("Server is listening on port %d...\n", PORT);
-
-        // Create a thread to accept incoming connections
-        HANDLE acceptThread = CreateThread(NULL, 0, AcceptConnections, (LPVOID)serverSocket, 0, NULL);
-        if (acceptThread == NULL) {
-            fprintf(stderr, "Failed to create accept thread: %d\n", GetLastError());
-            closesocket(serverSocket);
-            WSACleanup();
-            return 1;
-        }
-    }
-
-    //worker threads
+    // worker threads
     std::vector<std::thread> workers;
 
-    // Find number of devices and initialise as nullptr
     uint32_t device_count = k4a_device_get_installed_count();
     printf("Found %d connected devices:\n", device_count);
 
-    // Store devices with their serial numbers
     std::vector<KinectDevice> devices;
-
-    // Retrieve and print serial numbers in initial order
     std::cout << "Initial order of devices:" << std::endl;
 
     for (uint32_t i = 0; i < device_count; i++) {
@@ -817,32 +545,27 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Sort devices in order of SN
     std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
         return a.serial_number < b.serial_number;
-        });
+    });
 
-    if (OVERRIDEDEVICEORDER) {
-        // Override the order of the devices  
-        std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt"); // Load the desired order from a file
 
-        if(desiredOrder.size() != device_count) {
-            std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
-            return -1;
-		}   
-
-        // Reorder devices based on the desired order  
-        std::vector<KinectDevice> reorderedDevices;
-        for (const auto& sn : desiredOrder) {
-            auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {
-                return device.serial_number == sn;
-                });
-            if (it != devices.end()) {
-                reorderedDevices.push_back(*it);
-            }
-        }
-        devices = reorderedDevices;
+    std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt");
+    if (desiredOrder.size() != device_count) {
+        std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
+        return -1;
     }
+    std::vector<KinectDevice> reorderedDevices;
+    for (const auto& sn : desiredOrder) {
+        auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {
+            return device.serial_number == sn;
+        });
+        if (it != devices.end()) {
+            reorderedDevices.push_back(*it);
+        }
+    }
+    devices = reorderedDevices;
+
 
     // Print sorted order
     std::cout << "Sorted order of devices:" << std::endl;
@@ -851,57 +574,39 @@ int main(int argc, char* argv[])
         std::cout << " Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
     }
 
-    // Initialize Zenoh publisher (keep unique_ptr alive for program lifetime)
+    // Initialize Zenoh publisher
     std::unique_ptr<ZenohPublisher> zenohPublisher = std::make_unique<ZenohPublisher>("kinect/skeleton");
-
-    // Optionally pass zenoh config string to init() — empty means default config
     if (!zenohPublisher->init(/* options */ "")) {
         fprintf(stderr, "Zenoh: init() failed — continuing without Zenoh publishing\n");
     } else {
-        // Optionally (re)declare the key (constructor already set key)
         if (!zenohPublisher->declare("kinect/skeleton")) {
             fprintf(stderr, "Zenoh: declare() failed\n");
-
         }
-        // Publish pointer for use in worker threads
         g_zenoh = zenohPublisher.get();
     }
 
+    // Send a one-time hello message to Zenoh subscribers
     if (g_zenoh && g_zenoh->isActive()) {
-        // Prepare a simple text payload
-        std::string helloMsg = "Hello from HelloDevice";
-
-        // Publish raw bytes (no null terminator)
-        if (!g_zenoh->publish(helloMsg.data(), helloMsg.size())) {
-            fprintf(stderr, "Zenoh: publish(hello) failed\n");
+        const std::string hello = "HelloKinect: Hello to all Zenoh subscribers";
+        std::vector<uint8_t> hello_pkt(hello.begin(), hello.end());
+        if (g_zenoh->publish(hello_pkt)) {
+            printf(GRN "Zenoh: Sent hello message\n" RESET);
         } else {
-            printf("Zenoh: sent hello message\n");
+            fprintf(stderr, "Zenoh: Failed to publish hello message\n");
         }
-
-        // Alternatively, you can publish as vector<uint8_t>:
-        // std::vector<uint8_t> helloVec(helloMsg.begin(), helloMsg.end());
-        // g_zenoh->publish(helloVec);
     }
 
-
-    // Start threads for sorted devices
     for (size_t i = 0; i < devices.size(); i++) {
         JointFinder kinectJointFinder;
         std::cerr << "Starting thread for Device with serial number: " << devices[i].serial_number << std::endl;
-
-        // Register worker with watchdog before starting thread
         watchdog.registerWorker(i);
-
         workers.push_back(std::thread(&JointFinder::DetectJoints,
             &kinectJointFinder,
             static_cast<int>(i),
             devices[i].device,
-            socketToTransmit,
             std::ref(outputFile),
             std::ref(outputFileMutex),
             RECORDTIMESTAMPS,
-            OPENCAPTUREFRAMES,
-            SENDJOINTSVIATCP,
             STRESS_HANG_AFTER_FRAMES
         ));
     }
@@ -919,18 +624,9 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Stop watchdog before cleanup
     watchdog.stop();
     g_watchdog = nullptr;
 
-    if (SENDJOINTSVIATCP) {
-        // Close sockets and clean up
-        DeleteCriticalSection(&cs);
-        closesocket(serverSocket);
-        WSACleanup();
-    }
-
-    //HS
     for (size_t i = 0; i < devices.size(); i++) {
         k4a_device_stop_cameras(devices[i].device);
         k4a_device_close(devices[i].device);
