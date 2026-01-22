@@ -17,6 +17,7 @@
 #include <algorithm>
 #include "main.h"
 #include "Watchdog.h"
+#include "ZenohPublisher.h"
 
 #pragma comment(lib,"ws2_32.lib")   //Winsock Library
 
@@ -41,6 +42,9 @@ std::mutex outputFileMutex;
 // Global watchdog pointer for heartbeat calls from worker threads
 Watchdog* g_watchdog = nullptr;
 
+// Global pointer used by worker threads to publish (set in main())
+ZenohPublisher* g_zenoh = nullptr;
+
 const char* pkt = "Message to be sent\n";
 sockaddr_in dest;
 
@@ -59,7 +63,6 @@ std::string get_kinect_serial(k4a_device_t device) {
     size_t sn_size = sizeof(serial_number);
     if (k4a_device_get_serialnum(device, serial_number, &sn_size) != K4A_RESULT_SUCCEEDED) {
         printf(RED "\nFailed to get serial number for a Kinect device\n" RESET);
-
         return "";
     }
     return std::string(serial_number);
@@ -102,11 +105,10 @@ public:
 
         // device configuration
         k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-        config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
+        config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
         //config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
         config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
         config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
-        //config.depth_mode = K4A_DEPTH_MODE_NFOV_2X2BINNED;
         config.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
 
         // Start capturing from the device
@@ -307,6 +309,17 @@ public:
 
                     }
 
+
+                    // ALSO: publish the same payload via Zenoh (once per skeleton packet)
+                    if (g_zenoh && g_zenoh->isActive()) {
+                        if (!g_zenoh->publish(packet)) {
+                            std::cerr << "[Zenoh] publish failed for skeleton packet\n";
+                        }
+                        else {
+                            printf("Sending Zenoh Packet size %zd: ", packet.size());
+                        }
+                    }
+
                     if (SENDJOINTSVIATCP) {
                         if (DoSendMessage) {
                             // Broadcast message to all clients
@@ -315,9 +328,9 @@ public:
                                 //if (clientSockets[i] != clientSocket) { // Don't send back to the sender
                                 //Sends whole body as one packet
 
-                                printf("Sending Packet size %zd: ", packet.size());
-
                                 send(clientSockets[i], reinterpret_cast<const char*>(packet.data()), packet.size(), 0);
+                                
+                            
                             }
                             LeaveCriticalSection(&cs);
                         }
@@ -563,7 +576,7 @@ int main(int argc, char* argv[])
     bool SENDJOINTSVIATCP = true;
     bool OVERRIDEDEVICEORDER = true;
     bool RECORDTIMESTAMPS = false;
-    std::string ROOMNAME = "LKTest";
+    std::string ROOMNAME = "OneCam";
     std::string LOGFILEPATH = "C:\\Temp\\tempCG\\KinectLog.txt";
 
     // Stress test options (for testing watchdog)
@@ -837,6 +850,39 @@ int main(int argc, char* argv[])
         devices[i].name = "Device_" + std::to_string(i);
         std::cout << " Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
     }
+
+    // Initialize Zenoh publisher (keep unique_ptr alive for program lifetime)
+    std::unique_ptr<ZenohPublisher> zenohPublisher = std::make_unique<ZenohPublisher>("kinect/skeleton");
+
+    // Optionally pass zenoh config string to init() — empty means default config
+    if (!zenohPublisher->init(/* options */ "")) {
+        fprintf(stderr, "Zenoh: init() failed — continuing without Zenoh publishing\n");
+    } else {
+        // Optionally (re)declare the key (constructor already set key)
+        if (!zenohPublisher->declare("kinect/skeleton")) {
+            fprintf(stderr, "Zenoh: declare() failed\n");
+
+        }
+        // Publish pointer for use in worker threads
+        g_zenoh = zenohPublisher.get();
+    }
+
+    if (g_zenoh && g_zenoh->isActive()) {
+        // Prepare a simple text payload
+        std::string helloMsg = "Hello from HelloDevice";
+
+        // Publish raw bytes (no null terminator)
+        if (!g_zenoh->publish(helloMsg.data(), helloMsg.size())) {
+            fprintf(stderr, "Zenoh: publish(hello) failed\n");
+        } else {
+            printf("Zenoh: sent hello message\n");
+        }
+
+        // Alternatively, you can publish as vector<uint8_t>:
+        // std::vector<uint8_t> helloVec(helloMsg.begin(), helloMsg.end());
+        // g_zenoh->publish(helloVec);
+    }
+
 
     // Start threads for sorted devices
     for (size_t i = 0; i < devices.size(); i++) {
