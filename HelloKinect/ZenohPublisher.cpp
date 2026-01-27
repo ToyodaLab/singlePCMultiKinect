@@ -6,36 +6,41 @@
 #include <sstream>
 #include <cstring>
 
-
 ZenohPublisher::ZenohPublisher(const std::string& key)
-    : key_(key),
+    : default_key_(key),
       active_(false),
-      session_initialized_(false),
-      keyexpr_initialized_(false),
-      publisher_declared_(false)
+      session_initialized_(false)
 {
 }
 
 ZenohPublisher::ZenohPublisher(ZenohPublisher&& other) noexcept
-    : key_(std::move(other.key_)),
+    : default_key_(std::move(other.default_key_)),
       active_(other.active_.load())
 {
+    // Transfer session ownership if initialized
     session_initialized_ = other.session_initialized_;
-    keyexpr_initialized_ = other.keyexpr_initialized_;
-    publisher_declared_ = other.publisher_declared_;
-    
-    // Move-punning the underlying POD structs (allowed for C types)
     if (session_initialized_) {
         session_ = other.session_;
         other.session_initialized_ = false;
     }
-    if (keyexpr_initialized_) {
-        keyexpr_ = other.keyexpr_;
-        other.keyexpr_initialized_ = false;
-    }
-    if (publisher_declared_) {
-        publisher_ = other.publisher_;
-        other.publisher_declared_ = false;
+    // Move entries by explicitly transferring the POD handles and clearing flags on the source
+    {
+        std::lock_guard<std::mutex> lk(other.entries_mtx_);
+        for (auto &kv : other.entries_) {
+            Entry e;
+            if (kv.second.keyexpr_initialized) {
+                e.keyexpr = kv.second.keyexpr;
+                e.keyexpr_initialized = true;
+                kv.second.keyexpr_initialized = false;
+            }
+            if (kv.second.publisher_declared) {
+                e.publisher = kv.second.publisher;
+                e.publisher_declared = true;
+                kv.second.publisher_declared = false;
+            }
+            entries_.emplace(kv.first, std::move(e));
+        }
+        other.entries_.clear();
     }
     other.active_.store(false);
 }
@@ -45,25 +50,36 @@ ZenohPublisher& ZenohPublisher::operator=(ZenohPublisher&& other) noexcept
     if (this != &other)
     {
         shutdown();
-        key_ = std::move(other.key_);
+
+        default_key_ = std::move(other.default_key_);
         active_.store(other.active_.load());
 
         session_initialized_ = other.session_initialized_;
-        keyexpr_initialized_ = other.keyexpr_initialized_;
-        publisher_declared_ = other.publisher_declared_;
-
         if (session_initialized_) {
             session_ = other.session_;
             other.session_initialized_ = false;
         }
-        if (keyexpr_initialized_) {
-            keyexpr_ = other.keyexpr_;
-            other.keyexpr_initialized_ = false;
+
+        // Transfer entries
+        {
+            std::lock_guard<std::mutex> lk(other.entries_mtx_);
+            for (auto &kv : other.entries_) {
+                Entry e;
+                if (kv.second.keyexpr_initialized) {
+                    e.keyexpr = kv.second.keyexpr;
+                    e.keyexpr_initialized = true;
+                    kv.second.keyexpr_initialized = false;
+                }
+                if (kv.second.publisher_declared) {
+                    e.publisher = kv.second.publisher;
+                    e.publisher_declared = true;
+                    kv.second.publisher_declared = false;
+                }
+                entries_.emplace(kv.first, std::move(e));
+            }
+            other.entries_.clear();
         }
-        if (publisher_declared_) {
-            publisher_ = other.publisher_;
-            other.publisher_declared_ = false;
-        }
+
         other.active_.store(false);
     }
     return *this;
@@ -99,41 +115,63 @@ bool ZenohPublisher::init(const std::string& options)
     return true;
 }
 
+bool ZenohPublisher::declare_internal(const std::string& key, Entry& entry)
+{
+    // create a key expression
+    if (z_keyexpr_from_str(&entry.keyexpr, key.c_str()) != Z_OK) {
+        std::cerr << "[ZenohPublisher] z_keyexpr_from_str failed for key: " << key << "\n";
+        return false;
+    }
+    entry.keyexpr_initialized = true;
+
+    const struct z_loaned_session_t *loaned_session = z_session_loan(&session_);
+    const struct z_loaned_keyexpr_t *loaned_ke = z_keyexpr_loan(&entry.keyexpr);
+
+    // declare publisher
+    if (z_declare_publisher(loaned_session, &entry.publisher, loaned_ke, nullptr) != Z_OK) {
+        std::cerr << "[ZenohPublisher] z_declare_publisher failed for key: " << key << "\n";
+        // drop keyexpr if declared (cleanup)
+        z_moved_keyexpr_t moved_ke; moved_ke._this = entry.keyexpr;
+        z_keyexpr_drop(&moved_ke);
+        entry.keyexpr_initialized = false;
+        return false;
+    }
+
+    entry.publisher_declared = true;
+    return true;
+}
+
 bool ZenohPublisher::declare(const std::string& key)
 {
-    std::lock_guard<std::mutex> lk(publish_mtx_);
-    key_ = key;
-
     if (!isActive()) {
         std::cerr << "[ZenohPublisher] declare() called before init()\n";
         return false;
     }
 
-    // create a key expression
-    if (z_keyexpr_from_str(&keyexpr_, key_.c_str()) != Z_OK) {
-        std::cerr << "[ZenohPublisher] z_keyexpr_from_str failed for key: " << key_ << "\n";
-        return false;
+    {
+        std::lock_guard<std::mutex> lk(entries_mtx_);
+        auto it = entries_.find(key);
+        if (it != entries_.end()) {
+            if (it->second.publisher_declared) return true; // already declared
+            // otherwise we'll declare below using the existing entry
+        } else {
+            // insert empty entry to fill
+            entries_.emplace(key, Entry{});
+            it = entries_.find(key);
+        }
+
+        // declare for this entry
+        return declare_internal(key, it->second);
     }
-    keyexpr_initialized_ = true;
-
-    const struct z_loaned_session_t *loaned_session = z_session_loan(&session_);
-    const struct z_loaned_keyexpr_t *loaned_ke = z_keyexpr_loan(&keyexpr_);
-
-    // declare publisher
-    if (z_declare_publisher(loaned_session, &publisher_, loaned_ke, nullptr) != Z_OK) {
-        std::cerr << "[ZenohPublisher] z_declare_publisher failed for key: " << key_ << "\n";
-        // drop keyexpr if declared (cleanup)
-        z_moved_keyexpr_t moved_ke; moved_ke._this = keyexpr_;
-        z_keyexpr_drop(&moved_ke);
-        keyexpr_initialized_ = false;
-        return false;
-    }
-
-    publisher_declared_ = true;
-    return true;
 }
 
 bool ZenohPublisher::publish(const void* data, size_t len)
+{
+    // publish to default key
+    return publish(default_key_, data, len);
+}
+
+bool ZenohPublisher::publish(const std::string& key, const void* data, size_t len)
 {
     if (!isActive()) {
         std::cerr << "[ZenohPublisher] publish called but publisher not initialized.\n";
@@ -142,22 +180,48 @@ bool ZenohPublisher::publish(const void* data, size_t len)
 
     if (!data || len == 0) {
         // allow zero-length publish if desired; here we'll log and return true
-        std::cout << "[ZenohPublisher][stub] publish called with empty payload on key: " << key_ << std::endl;
+        std::cout << "[ZenohPublisher][stub] publish called with empty payload on key: " << key << std::endl;
         return true;
     }
 
+    // Ensure publisher exists for the key
+    {
+        std::lock_guard<std::mutex> lk(entries_mtx_);
+        auto it = entries_.find(key);
+        if (it == entries_.end() || !it->second.publisher_declared) {
+            // release lock while calling declare() because declare takes entries_mtx_ internally
+        }
+    }
+
+    // If no publisher, attempt to declare (this will lock entries_mtx_)
+    {
+        std::lock_guard<std::mutex> lk(entries_mtx_);
+        auto it = entries_.find(key);
+        if (it == entries_.end()) {
+            entries_.emplace(key, Entry{});
+            it = entries_.find(key);
+        }
+        if (!it->second.publisher_declared) {
+            if (!declare_internal(key, it->second)) {
+                std::cerr << "[ZenohPublisher] publish() failed: cannot declare publisher for key: " << key << "\n";
+                return false;
+            }
+        }
+    }
+
+    // Now do the actual publish under publish_mtx_ to serialize publishes from this process
     std::lock_guard<std::mutex> lk(publish_mtx_);
 
-    if (!session_initialized_) {
-        std::cerr << "[ZenohPublisher] publish() called but session not initialized\n";
-        return false;
-    }
-    if (!publisher_declared_) {
-        // If user didn't call declare explicitly, try to declare now with stored key.
-        if (!declare(key_)) {
-            std::cerr << "[ZenohPublisher] publish() failed: cannot auto-declare publisher\n";
+    // find entry (safe now)
+    Entry entry;
+    {
+        std::lock_guard<std::mutex> lk2(entries_mtx_);
+        auto it = entries_.find(key);
+        if (it == entries_.end() || !it->second.publisher_declared) {
+            std::cerr << "[ZenohPublisher] publish() internal error: publisher missing for key: " << key << "\n";
             return false;
         }
+        entry = it->second; // copy struct (contains POD z_owned_*).
     }
 
     // Create owned bytes from buffer (copy)
@@ -172,8 +236,8 @@ bool ZenohPublisher::publish(const void* data, size_t len)
     z_moved_bytes_t moved_bytes;
     moved_bytes._this = owned_bytes;
 
-    // Send via publisher
-    const struct z_loaned_publisher_t *loaned_pub = z_publisher_loan(&publisher_);
+    // Send via publisher (use loan on the actual publisher stored in the map)
+    const struct z_loaned_publisher_t *loaned_pub = z_publisher_loan(&entry.publisher);
     if (!loaned_pub) {
         std::cerr << "[ZenohPublisher] z_publisher_loan returned NULL\n";
         // drop moved bytes to avoid leak
@@ -191,12 +255,16 @@ bool ZenohPublisher::publish(const void* data, size_t len)
 
     // success: ownership of moved bytes consumed by zenoh
     return true;
-
 }
 
 bool ZenohPublisher::publish(const std::vector<uint8_t>& data)
 {
     return publish(data.data(), data.size());
+}
+
+bool ZenohPublisher::publish(const std::string& key, const std::vector<uint8_t>& data)
+{
+    return publish(key, data.data(), data.size());
 }
 
 void ZenohPublisher::shutdown()
@@ -208,23 +276,26 @@ void ZenohPublisher::shutdown()
     }
 
     std::lock_guard<std::mutex> lk(publish_mtx_);
+    std::lock_guard<std::mutex> lk2(entries_mtx_);
 
-    // Drop publisher if declared
-    if (publisher_declared_) {
-        z_moved_publisher_t moved_pub;
-        moved_pub._this = publisher_;
-        // Try undeclare/drop; ignore return value
-        z_publisher_drop(&moved_pub);
-        publisher_declared_ = false;
+    // Drop all publishers/keyexprs in the map
+    for (auto &kv : entries_) {
+        Entry &entry = kv.second;
+        if (entry.publisher_declared) {
+            z_moved_publisher_t moved_pub;
+            moved_pub._this = entry.publisher;
+            // Try undeclare/drop; ignore return value
+            z_publisher_drop(&moved_pub);
+            entry.publisher_declared = false;
+        }
+        if (entry.keyexpr_initialized) {
+            z_moved_keyexpr_t moved_ke;
+            moved_ke._this = entry.keyexpr;
+            z_keyexpr_drop(&moved_ke);
+            entry.keyexpr_initialized = false;
+        }
     }
-
-    // Drop keyexpr if created
-    if (keyexpr_initialized_) {
-        z_moved_keyexpr_t moved_ke;
-        moved_ke._this = keyexpr_;
-        z_keyexpr_drop(&moved_ke);
-        keyexpr_initialized_ = false;
-    }
+    entries_.clear();
 
     // Close session
     if (session_initialized_) {

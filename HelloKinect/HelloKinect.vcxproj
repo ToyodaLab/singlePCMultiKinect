@@ -135,11 +135,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="ProcessDevice.cpp" />
     <ClCompile Include="Watchdog.cpp" />
     <ClCompile Include="ZenohPublisher.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="main.h" />
+    <ClInclude Include="ProcessDevice.h" />
     <ClInclude Include="Watchdog.h" />
     <ClInclude Include="ZenohPublisher.h" />
   </ItemGroup>
