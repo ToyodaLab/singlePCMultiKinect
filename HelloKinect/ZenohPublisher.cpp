@@ -5,6 +5,8 @@
 #include <iostream>
 #include <sstream>
 #include <cstring>
+#include <chrono>
+#include <thread>
 
 ZenohPublisher::ZenohPublisher(const std::string& key)
     : default_key_(key),
@@ -43,6 +45,11 @@ ZenohPublisher::ZenohPublisher(ZenohPublisher&& other) noexcept
         other.entries_.clear();
     }
     other.active_.store(false);
+
+    // Transfer heartbeat state (do not transfer running thread)
+    heartbeat_active_.store(false);
+    heartbeat_interval_ms_ = other.heartbeat_interval_ms_;
+    heartbeat_key_ = std::move(other.heartbeat_key_);
 }
 
 ZenohPublisher& ZenohPublisher::operator=(ZenohPublisher&& other) noexcept
@@ -81,6 +88,11 @@ ZenohPublisher& ZenohPublisher::operator=(ZenohPublisher&& other) noexcept
         }
 
         other.active_.store(false);
+
+        // Transfer heartbeat config but do not move running thread
+        heartbeat_active_.store(false);
+        heartbeat_interval_ms_ = other.heartbeat_interval_ms_;
+        heartbeat_key_ = std::move(other.heartbeat_key_);
     }
     return *this;
 }
@@ -267,6 +279,60 @@ bool ZenohPublisher::publish(const std::string& key, const std::vector<uint8_t>&
     return publish(key, data.data(), data.size());
 }
 
+bool ZenohPublisher::startHeartbeat(const std::string& key, int interval_ms)
+{
+    if (!isActive()) {
+        std::cerr << "[ZenohPublisher] startHeartbeat() called before init()\n";
+        return false;
+    }
+
+    // If a heartbeat is already running, stop it first.
+    stopHeartbeat();
+
+    heartbeat_key_ = key;
+    heartbeat_interval_ms_ = (interval_ms > 0) ? interval_ms : 1000;
+    heartbeat_active_.store(true);
+
+    // Ensure the heartbeat key is declared so publish doesn't race on first send.
+    if (!declare(heartbeat_key_)) {
+        std::cerr << "[ZenohPublisher] startHeartbeat: failed to declare key: " << heartbeat_key_ << "\n";
+        heartbeat_active_.store(false);
+        return false;
+    }
+
+    // Launch background thread
+    heartbeat_thread_ = std::thread([this]() {
+        while (heartbeat_active_.load() && isActive()) {
+            // Send a single byte with value 1 as the heartbeat payload
+            uint8_t one = 1;
+            bool ok = publish(heartbeat_key_, &one, sizeof(one));
+            if (!ok) {
+                std::cerr << "[ZenohPublisher] heartbeat publish failed for key: " << heartbeat_key_ << "\n";
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(heartbeat_interval_ms_));
+        }
+    });
+
+    return true;
+}
+
+void ZenohPublisher::stopHeartbeat()
+{
+    bool expected = true;
+    if (!heartbeat_active_.compare_exchange_strong(expected, false)) {
+        // not active
+    }
+    // Join thread if running
+    if (heartbeat_thread_.joinable()) {
+        try {
+            heartbeat_thread_.join();
+        }
+        catch (const std::exception& ex) {
+            std::cerr << "[ZenohPublisher] stopHeartbeat join exception: " << ex.what() << "\n";
+        }
+    }
+}
+
 void ZenohPublisher::shutdown()
 {
     bool expected = true;
@@ -274,6 +340,9 @@ void ZenohPublisher::shutdown()
         // already inactive
         return;
     }
+
+    // Stop heartbeat before dropping publishers/session
+    stopHeartbeat();
 
     std::lock_guard<std::mutex> lk(publish_mtx_);
     std::lock_guard<std::mutex> lk2(entries_mtx_);

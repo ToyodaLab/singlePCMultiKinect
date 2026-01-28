@@ -7,6 +7,7 @@
 #include <mutex>
 #include <atomic>
 #include <unordered_map>
+#include <thread> // For heartbeat
 
 #include <zenoh.h>
 
@@ -14,7 +15,7 @@ class ZenohPublisher
 {
 public:
     // Construct with a default key (can be changed by calling declare).
-    explicit ZenohPublisher(const std::string& key = "kinect/skeleton");
+    explicit ZenohPublisher(const std::string& key = "cg/skeleton");
 
     // Non-copyable
     ZenohPublisher(const ZenohPublisher&) = delete;
@@ -23,6 +24,12 @@ public:
     // Movable
     ZenohPublisher(ZenohPublisher&&) noexcept;
     ZenohPublisher& operator=(ZenohPublisher&&) noexcept;
+
+    // Start/stop periodic heartbeat publishes.
+    // startHeartbeat: key = topic to publish heartbeat to, interval_ms = publish interval (ms).
+    // Returns true if heartbeat thread started successfully.
+    bool startHeartbeat(const std::string& key = "cg/heartbeat", int interval_ms = 1000);
+    void stopHeartbeat();
 
     // Initialize the Zenoh session. Returns true on success.
     // options: JSON-like config string for zenoh (optional).
@@ -79,4 +86,10 @@ private:
 
     // Map of key -> Entry
     std::unordered_map<std::string, Entry> entries_;
+
+    // Heartbeat internals
+    std::atomic<bool> heartbeat_active_{ false };
+    std::thread heartbeat_thread_;
+    std::string heartbeat_key_;
+    int heartbeat_interval_ms_{ 1000 };
 };

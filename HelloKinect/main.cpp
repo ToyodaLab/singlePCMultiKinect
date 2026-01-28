@@ -11,7 +11,6 @@
 #include <chrono>                   // For timestamps
 #include <mutex> 			        // For thread safe logging         
 #include <algorithm>
-#include "main.h"
 #include "Watchdog.h"
 #include "ZenohPublisher.h"
 #include "ProcessDevice.h"
@@ -76,9 +75,13 @@ std::vector<std::string> LoadDesiredOrder(const std::string& filename) {
     }
 
     std::string line;
+	bool firstLine = true;
     while (std::getline(ifs, line)) {
         if (line.empty()) continue; // skip blank lines
-
+        if (firstLine) { // skip first line
+            firstLine = false;
+            continue;
+        }
         printf("Parsing room file current line: ");
         printf(line.c_str());
         printf("\n");
@@ -119,7 +122,7 @@ int main(int argc, char* argv[])
     // This is needed when restarting via watchdog
     Sleep(3000);
 
-    printf("HelloDevice Version: 1.2 \n" RESET);
+    printf("HelloDevice Version: 1.3 \n" RESET);
     printf("Use -h to see executable parameters.\n" RESET);
 
     bool RECORDTIMESTAMPS = false;
@@ -193,6 +196,9 @@ int main(int argc, char* argv[])
     // Initialize watchdog for auto-restart on crashes/hangs
     Watchdog watchdog(argc, argv);
     g_watchdog = &watchdog;
+
+    // Zenoh string
+    std::string zenohString = "cg/" + ROOMNAME + "/dp/";
 
     // TODO fix logpath default and directory creation
     std::ofstream outputFile(LOGFILEPATH, std::ios::app);
@@ -294,14 +300,15 @@ int main(int argc, char* argv[])
     }
 
     // Initialize Zenoh publisher
-    std::unique_ptr<ZenohPublisher> zenohPublisher = std::make_unique<ZenohPublisher>("kinect/skeleton");
+    std::unique_ptr<ZenohPublisher> zenohPublisher = std::make_unique<ZenohPublisher>(zenohString + "sk");
     if (!zenohPublisher->init(/* options */ "")) {
         fprintf(stderr, "Zenoh: init() failed — continuing without Zenoh publishing\n");
     } else {
-        if (!zenohPublisher->declare("kinect/skeleton")) {
+        if (!zenohPublisher->declare(zenohString + "sk")) {
             fprintf(stderr, "Zenoh: declare() failed\n");
         }
         g_zenoh = zenohPublisher.get();
+        g_zenoh->startHeartbeat(zenohString + "hb");
     }
 
     // Send a one-time hello message to Zenoh subscribers
