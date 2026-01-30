@@ -33,7 +33,7 @@ void JointFinder::DetectJoints(int deviceIndex, k4a_device_t openedDevice,
 
     // device configuration
     k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
-    config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
+    config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
     //config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
     config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
     config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
