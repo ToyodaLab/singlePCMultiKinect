@@ -105,6 +105,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\Projects\Zenoh\Jan2026\zenohcpp-1.7.2-standalone\include;</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -122,6 +123,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>C:\Projects\Zenoh\Jan2026\zenohcpp-1.7.2-standalone\include;C:\Projects\Zenoh\Jan2026\zenoh-c-1.7.2-x86_64-pc-windows-msvc-standalone\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,12 +139,14 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ProcessDevice.cpp" />
     <ClCompile Include="Watchdog.cpp" />
+    <ClCompile Include="WorkerController.cpp" />
     <ClCompile Include="ZenohPublisher.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="main.h" />
     <ClInclude Include="ProcessDevice.h" />
     <ClInclude Include="Watchdog.h" />
+    <ClInclude Include="WorkerController.h" />
     <ClInclude Include="ZenohPublisher.h" />
   </ItemGroup>
   <ItemGroup>

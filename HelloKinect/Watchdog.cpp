@@ -5,6 +5,8 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <vector>
+#include <fstream>
 
 // Static member initialization
 std::atomic<int64_t> Watchdog::s_heartbeats[Watchdog::MAX_WORKERS] = {};
@@ -68,6 +70,12 @@ void Watchdog::heartbeat(size_t workerIndex) {
     }
 }
 
+void Watchdog::registerRestartHandler(size_t workerIndex, std::function<void(size_t)> handler) {
+    if (workerIndex >= MAX_WORKERS) return;
+    std::lock_guard<std::mutex> lk(m_handlerMutex);
+    m_restartHandlers[workerIndex] = handler;
+}
+
 // Windows thread function wrapper (friend of Watchdog class)
 DWORD WINAPI WatchdogThreadProc(LPVOID lpParam) {
     Watchdog* watchdog = static_cast<Watchdog*>(lpParam);
@@ -120,14 +128,15 @@ void Watchdog::monitorLoop() {
                 std::ostringstream oss;
                 oss << "Worker thread " << i << " appears hung (no heartbeat for "
                     << elapsed << " seconds)";
-                triggerRestart(oss.str());
-                return;
+                // Trigger per-worker restart callback if registered
+                triggerRestart(oss.str(), i);
+                // Do not exit monitorLoop; continue monitoring other workers.
             }
         }
     }
 }
 
-void Watchdog::triggerRestart(const std::string& reason) {
+void Watchdog::triggerRestart(const std::string& reason, size_t workerIndex) {
     logCrashEvent(reason);
 
     auto now = std::chrono::steady_clock::now();
@@ -151,6 +160,34 @@ void Watchdog::triggerRestart(const std::string& reason) {
     }
 
     m_lastRestartTime = now;
+
+    // If a per-worker handler is registered, call it and return (no process restart).
+    {
+        std::lock_guard<std::mutex> lk(m_handlerMutex);
+        if (workerIndex < MAX_WORKERS && m_restartHandlers[workerIndex]) {
+            try {
+                // Call handler on watchdog thread (keep handler lightweight).
+                m_restartHandlers[workerIndex](workerIndex);
+                std::ostringstream oss;
+                oss << "Invoked restart handler for worker " << workerIndex;
+                logCrashEvent(oss.str());
+                std::cerr << "[Watchdog] " << oss.str() << std::endl;
+                return;
+            } catch (const std::exception& ex) {
+                std::ostringstream oss;
+                oss << "Restart handler threw exception: " << ex.what();
+                logCrashEvent(oss.str());
+                std::cerr << "[Watchdog] " << oss.str() << std::endl;
+                // fall through to legacy restart attempt
+            } catch (...) {
+                logCrashEvent("Restart handler threw unknown exception");
+                std::cerr << "[Watchdog] Restart handler threw unknown exception" << std::endl;
+                // fall through to legacy restart attempt
+            }
+        }
+    }
+
+    // Legacy behavior: attempt to restart entire process (unchanged)
     m_restartRequested = true;
 
     // Build command line for restart
@@ -164,8 +201,8 @@ void Watchdog::triggerRestart(const std::string& reason) {
         }
     }
 
-    logCrashEvent("Initiating restart: " + cmdLine);
-    std::cerr << "[Watchdog] Initiating restart: " << cmdLine << std::endl;
+    logCrashEvent("Initiating process restart: " + cmdLine);
+    std::cerr << "[Watchdog] Initiating process restart: " << cmdLine << std::endl;
 
     // Create new process
     STARTUPINFOA si = { sizeof(si) };

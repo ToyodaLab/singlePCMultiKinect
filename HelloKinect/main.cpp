@@ -11,9 +11,14 @@
 #include <chrono>                   // For timestamps
 #include <mutex> 			        // For thread safe logging         
 #include <algorithm>
+#include <memory>
 #include "Watchdog.h"
 #include "ZenohPublisher.h"
 #include "ProcessDevice.h"
+#include "WorkerController.h"
+#include <Windows.h>
+#include <atomic>
+
 
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
@@ -115,12 +120,28 @@ void printHelp() {
         << "  -h, --help              Show this help message\n";
 }
 
+// Graceful termination flag set by console handler
+static std::atomic<bool> g_terminate{ false };
+
+// Fast console control handler — keep it tiny.
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType)
+{
+    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_CLOSE_EVENT ||
+        dwCtrlType == CTRL_BREAK_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
+        g_terminate.store(true);
+        return TRUE; // handled
+    }
+    return FALSE; // not handled
+}
 
 int main(int argc, char* argv[])
 {
     // Brief delay to allow previous process to fully release resources (port, devices)
     // This is needed when restarting via watchdog
     Sleep(3000);
+
+    // Register console handler early so Ctrl+C triggers graceful shutdown
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
     printf("HelloDevice Version: 1.3 \n" RESET);
     printf("Use -h to see executable parameters.\n" RESET);
@@ -243,13 +264,11 @@ int main(int argc, char* argv[])
         }
     }
 
-    // worker threads
-    std::vector<std::thread> workers;
-
     uint32_t device_count = k4a_device_get_installed_count();
     printf("Found %d connected devices:\n", device_count);
 
-    std::vector<KinectDevice> devices;
+    // Use DeviceContext so workers can update device handles safely.
+    std::vector<std::shared_ptr<DeviceContext>> devices;
     std::cout << "Initial order of devices:" << std::endl;
 
     for (uint32_t i = 0; i < device_count; i++) {
@@ -262,7 +281,10 @@ int main(int argc, char* argv[])
             std::string serial_number = get_device_serial(device);
             if (!serial_number.empty()) {
                 std::cout << " Device " << i << " SN: " << serial_number << std::endl;
-                devices.push_back({ device, serial_number });
+                auto ctx = std::make_shared<DeviceContext>();
+                ctx->device = makeDeviceHandle(device); // take ownership with deleter
+                ctx->serial = serial_number;
+                devices.push_back(ctx);
             }
             else {
                 k4a_device_close(device);
@@ -270,9 +292,9 @@ int main(int argc, char* argv[])
         }
     }
 
-    std::sort(devices.begin(), devices.end(), [](const KinectDevice& a, const KinectDevice& b) {
-        return a.serial_number < b.serial_number;
-    });
+    std::sort(devices.begin(), devices.end(), [](const std::shared_ptr<DeviceContext>& a, const std::shared_ptr<DeviceContext>& b) {
+        return a->serial < b->serial;
+        });
 
 
     std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt");
@@ -280,11 +302,12 @@ int main(int argc, char* argv[])
         std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
         return -1;
     }
-    std::vector<KinectDevice> reorderedDevices;
+    // Reorder DeviceContext vector according to desired order (match by serial)
+    std::vector<std::shared_ptr<DeviceContext>> reorderedDevices;
     for (const auto& sn : desiredOrder) {
-        auto it = std::find_if(devices.begin(), devices.end(), [&](const KinectDevice& device) {
-            return device.serial_number == sn;
-        });
+        auto it = std::find_if(devices.begin(), devices.end(), [&](const std::shared_ptr<DeviceContext>& ctx) {
+            return ctx->serial == sn;
+            });
         if (it != devices.end()) {
             reorderedDevices.push_back(*it);
         }
@@ -292,18 +315,37 @@ int main(int argc, char* argv[])
     devices = reorderedDevices;
 
 
-    // Print sorted order
+    // Print sorted order and store real serials (fall back to Device_n only for display)
     std::cout << "Sorted order of devices:" << std::endl;
     for (size_t i = 0; i < devices.size(); i++) {
-        devices[i].name = "Device_" + std::to_string(i);
-        std::cout << " Device " << i << "SN: " << devices[i].serial_number << " Name: " << devices[i].name << std::endl;
+        // Capture real serial if we have an open handle; otherwise keep the existing label temporarily.
+        std::string realSN = "";
+        {
+            std::lock_guard<std::mutex> lk(devices[i]->mutex);
+            if (devices[i]->device && *devices[i]->device) {
+                realSN = get_device_serial(*devices[i]->device); // real hardware serial
+                if (!realSN.empty()) {
+                    devices[i]->serial = realSN; // store physical serial used for reopen matching
+                } else {
+                    // fallback to a stable display name if driver didn't provide a serial
+                    devices[i]->serial = "Device_" + std::to_string(i);
+                }
+            } else {
+                devices[i]->serial = "Device_" + std::to_string(i);
+            }
+        }
+
+        // Keep a separate display name if you want to show a friendly label
+        std::string displayName = "Device_" + std::to_string(i);
+        std::cout << " Device " << i << " SN: " << devices[i]->serial << " Name: " << displayName << std::endl;
     }
 
     // Initialize Zenoh publisher
     std::unique_ptr<ZenohPublisher> zenohPublisher = std::make_unique<ZenohPublisher>(zenohString + "sk");
     if (!zenohPublisher->init(/* options */ "")) {
         fprintf(stderr, "Zenoh: init() failed — continuing without Zenoh publishing\n");
-    } else {
+    }
+    else {
         if (!zenohPublisher->declare(zenohString + "sk")) {
             fprintf(stderr, "Zenoh: declare() failed\n");
         }
@@ -317,45 +359,56 @@ int main(int argc, char* argv[])
         std::vector<uint8_t> hello_pkt(hello.begin(), hello.end());
         if (g_zenoh->publish(hello_pkt)) {
             printf(GRN "Zenoh: Sent hello message\n" RESET);
-        } else {
+        }
+        else {
             fprintf(stderr, "Zenoh: Failed to publish hello message\n");
         }
     }
 
+    // worker supervisors
+    std::vector<std::shared_ptr<WorkerController>> supervisors;
+    supervisors.reserve(devices.size());
+
     for (size_t i = 0; i < devices.size(); i++) {
-        JointFinder kinectJointFinder;
-        std::cerr << "Starting thread for Device with serial number: " << devices[i].serial_number << std::endl;
-        watchdog.registerWorker(i);
-        workers.push_back(std::thread(&JointFinder::DetectJoints,
-            &kinectJointFinder,
+        std::cerr << "Creating supervisor for Device with serial number: " << devices[i]->serial << std::endl;
+        auto sup = std::make_shared<WorkerController>(devices[i],
             static_cast<int>(i),
-            devices[i].device,
-            std::ref(outputFile),
-            std::ref(outputFileMutex),
+            outputFile,
+            outputFileMutex,
             RECORDTIMESTAMPS,
-            STRESS_HANG_AFTER_FRAMES
-        ));
+            STRESS_HANG_AFTER_FRAMES,
+            &watchdog);
+        supervisors.push_back(sup);
+        sup->start();
     }
 
-    // Start watchdog monitoring after all workers are registered
+    // Start watchdog monitoring (it will now invoke per-worker restart handlers rather than process exit)
     watchdog.start();
 
-    // Join threads
-    for (size_t i = 0; i < workers.size(); i++) {
-        try {
-            workers[i].join();
-        }
-        catch (std::exception& ex) {
-            printf("join() error log: %s\n", ex.what());
-        }
+    // Wait for supervisors; in this design supervisors run until stop requested.
+    // Here we simply join them at program shutdown point (this is application specific).
+    for (auto& sup : supervisors) {
+        // In normal run these will run indefinitely; implement your termination policy as needed.
+        // For graceful shutdown you would call sup->stopAndJoin() from a signal handler.
+    }
+
+    // Example: wait until app termination - block here or implement proper signal handling as needed.
+    // For demo: sleep loop; replace with proper shutdown handling as needed.
+    while (true) { Sleep(1000); }
+
+    // On shutdown:
+    for (auto& sup : supervisors) {
+        sup->stopAndJoin();
     }
 
     watchdog.stop();
     g_watchdog = nullptr;
 
+    // DeviceHandles are owned by DeviceContext -> shared_ptr destructor (deleter) will stop/close devices.
+    // Reset contexts to run deleters if worker threads already exited.
     for (size_t i = 0; i < devices.size(); i++) {
-        k4a_device_stop_cameras(devices[i].device);
-        k4a_device_close(devices[i].device);
+        std::lock_guard<std::mutex> lk(devices[i]->mutex);
+        devices[i]->device.reset();
     }
 
 
@@ -364,5 +417,7 @@ int main(int argc, char* argv[])
         outputFile.close();
     }
 
-}
+    std::cerr << "Shutdown complete." << std::endl;
+    return 0;
 
+}
