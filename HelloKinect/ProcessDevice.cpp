@@ -1,40 +1,39 @@
 ﻿#include "ProcessDevice.h"
-
+#include "ComInit.h" // RAII wrapper for COM initialization
+#pragma comment(lib, "ole32.lib").
 #include <iostream>
 #include <vector>
 #include <cstring>
 #include <cstdint>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include "winsock.h"
 #pragma comment(lib, "Ws2_32.lib")
 
+#include <objbase.h> // CoInitializeEx / CoUninitialize for COM initialization on worker threads
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
 #define MAG   "\x1B[35m"
 #define RESET "\x1B[0m"
 
-#define BUFFER_SIZE 1024 // kept for internal formatting/log buffers if needed
+#define BUFFER_SIZE 1024
 
-// Safe release helper: reset a DeviceHandle (calls its deleter) and catch any exceptions.
-// Always use this for handles swapped out from deviceCtx so driver destructors don't escape.
 static void releaseHandleSafely(DeviceHandle h, int deviceIndex, const char* reason)
 {
     try {
         if (h) {
-            h.reset(); // deleter runs here
+            h.reset();
         }
-    } catch (const std::exception& e) {
-        printf(YEL "Device %d: Exception while releasing handle (%s): %s\n" RESET, deviceIndex, reason, e.what());
     } catch (...) {
-        printf(YEL "Device %d: Unknown exception while releasing handle (%s)\n" RESET, deviceIndex, reason);
+        printf(YEL "Device %d: Exception while releasing handle (%s)\n" RESET, deviceIndex, reason);
     }
 }
 
-// Each Kinect is a class JointFinder.
-// Removed TCP socket param; we only publish via Zenoh now.
+// Updated signature: added `deviceLabel` (caller-provided label such as "SN1").
 void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> deviceCtx,
+    const std::string& deviceLabel,
     std::ofstream& outputFile, std::mutex& outputFileMutex,
     bool RECORDTIMESTAMPS,
     int stressHangAfterFrames /* = 0 */)
@@ -42,8 +41,10 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
     printf(GRN "Detecting joints in %d\n" RESET, deviceIndex);
 
     uint32_t deviceID = deviceIndex;
-    std::string deviceSerialID;
-    {
+    // Use the provided deviceLabel (e.g. "serial1") as the initial serial/label.
+    // Fall back to context serial only if deviceLabel is empty.
+    std::string deviceSerialID = deviceLabel;
+    if (deviceSerialID.empty()) {
         std::lock_guard<std::mutex> lk(deviceCtx->mutex);
         deviceSerialID = deviceCtx->serial;
     }
@@ -56,15 +57,24 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
     // device configuration
     k4a_device_configuration_t config = K4A_DEVICE_CONFIG_INIT_DISABLE_ALL;
     config.camera_fps = K4A_FRAMES_PER_SECOND_30; // can be 5, 15, 30
-    //config.camera_fps = K4A_FRAMES_PER_SECOND_5; // can be 5, 15, 30
     config.color_format = K4A_IMAGE_FORMAT_COLOR_MJPG;
     config.color_resolution = K4A_COLOR_RESOLUTION_OFF;
     config.depth_mode = K4A_DEPTH_MODE_NFOV_UNBINNED;
 
-    // Start capturing from the device
+    // Attempt to start capturing from the device (worker expects a valid handle installed by supervisor)
+    {
+        std::lock_guard<std::mutex> lk(deviceCtx->mutex);
+        if (!deviceCtx->device || !(*deviceCtx->device)) {
+            printf(YEL "Device %d: no device handle at worker start; exiting\n" RESET, deviceIndex);
+            return;
+        }
+    }
+
     if (k4a_device_start_cameras(*deviceCtx->device, &config) != K4A_RESULT_SUCCEEDED)
     {
         printf(RED "Failed to start capturing from the device" RESET);
+        // Let worker exit and allow supervisor to reopen/resume
+        return;
     }
 
     // setup sensor calibration
@@ -72,6 +82,9 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
     if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(*deviceCtx->device, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &sensor_calibration))
     {
         printf(RED "Get depth camera calibration failed!\n" RESET);
+        // Let worker exit and allow supervisor to reopen/resume
+        k4a_device_stop_cameras(*deviceCtx->device);
+        return;
     }
 
     // Set up tracker
@@ -80,150 +93,23 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
     if (K4A_RESULT_SUCCEEDED != k4abt_tracker_create(&sensor_calibration, tracker_config, &tracker))
     {
         printf(RED "Body tracker initialization failed!\n" RESET);
+        k4a_device_stop_cameras(*deviceCtx->device);
+        return;
     }
 
-    printf(GRN "Device %d: Start processing\n" RESET, deviceIndex);
+    printf(GRN "Device %d: Start processing (label='%s')\n" RESET, deviceIndex, deviceSerialID.c_str());
 
     // resilience parameters (per-thread)
     const int MAX_DEVICE_ERRORS = 10;           // accumulate timeouts/failures before attempting restart
-    const int MAX_REOPEN_ATTEMPTS = 5;          // how many times to try re-open by serial before giving up
     int deviceErrorCount = 0;
-    int restartAttempts = 0;
 
-    // Helper: attempt to re-open the device by serial and restart cameras/tracker.
-    auto reopenDeviceBySerial = [&](const std::string& serial, bool forceReplace = false) -> bool {
-        // If context already has the correct device serial and a valid handle, nothing to do.
-        {
-            std::lock_guard<std::mutex> lk(deviceCtx->mutex);
-            if (!forceReplace && deviceCtx->device && *deviceCtx->device && deviceCtx->serial == serial) {
-                printf(GRN "Device %d: context already holds device with matching serial '%s'\n" RESET, deviceIndex, serial.c_str());
-                return true;
-            }
-        }
-
-        // If forcing replacement, destroy tracker, swap & release old handle, and wait for OS re-enumeration.
-        std::shared_ptr<k4a_device_t> oldHandleForRelease;
-        if (forceReplace) {
-            printf(YEL "Device %d: Force-replace requested: destroying tracker and releasing old device handle before reopen\n" RESET, deviceIndex);
-
-            // Destroy local tracker so it won't touch device while we release it.
-            if (tracker) {
-                k4abt_tracker_destroy(tracker);
-                tracker = NULL;
-            }
-
-            // Swap out old handle under lock; release outside the lock.
-            {
-                std::lock_guard<std::mutex> lk(deviceCtx->mutex);
-                oldHandleForRelease = deviceCtx->device;
-                deviceCtx->device.reset();
-                deviceCtx->serial.clear();
-            }
-
-            // Release outside lock with defensive catch.
-            releaseHandleSafely(oldHandleForRelease, deviceIndex, "reopen-old-handle");
-
-            // Wait for OS/driver to re-enumerate the USB device before trying to open.
-            // Poll installed device count for a short window.
-            const int WAIT_MS = 3000;
-            const int POLL_MS = 200;
-            int waited = 0;
-            while (waited < WAIT_MS) {
-                int installed = k4a_device_get_installed_count();
-                if (installed > 0) break; // some device(s) present; proceed to scanning
-                std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
-                waited += POLL_MS;
-            }
-            printf(YEL "Device %d: waited %d ms for OS re-enumeration before reopen\n" RESET, deviceIndex, waited);
-        }
-
-        const int OPEN_RETRIES = 3;
-        for (int attempt = 0; attempt < MAX_REOPEN_ATTEMPTS; ++attempt) {
-            int installed = k4a_device_get_installed_count();
-            printf(YEL "Device %d: Reopen attempt %d scanning %d installed devices\n" RESET, deviceIndex, attempt + 1, installed);
-
-            for (int i = 0; i < installed; ++i) {
-                k4a_device_t cand = NULL;
-                k4a_result_t openRes = k4a_device_open(i, &cand);
-                if (openRes != K4A_RESULT_SUCCEEDED || cand == NULL) {
-                    printf(YEL "Device %d: k4a_device_open index=%d failed (res=%d)\n" RESET, deviceIndex, i, (int)openRes);
-                    continue;
-                }
-
-                // small pause to let driver populate serial if needed
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-                std::string candSN = get_device_serial(cand);
-                if (candSN.empty()) {
-                    printf(YEL "Device %d: index=%d reported empty serial (will close)\n" RESET, deviceIndex, i);
-                    k4a_device_close(cand);
-                    continue;
-                }
-
-                printf(GRN "Device %d: index=%d has serial '%s'\n" RESET, deviceIndex, i, candSN.c_str());
-
-                if (candSN != serial) {
-                    k4a_device_close(cand);
-                    continue;
-                }
-
-                // Try a few times to start cameras — transient failures happen when USB stack is still settling.
-                bool started = false;
-                for (int r = 0; r < OPEN_RETRIES; ++r) {
-                    if (k4a_device_start_cameras(cand, &config) == K4A_RESULT_SUCCEEDED) {
-                        started = true;
-                        break;
-                    }
-                    printf(YEL "Device %d: start_cameras failed on index=%d (retry %d)\n" RESET, deviceIndex, i, r + 1);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100 * (r + 1)));
-                }
-                if (!started) {
-                    printf(RED "Device %d: Failed to start cameras on reopened device index %d\n" RESET, deviceIndex, i);
-                    k4a_device_close(cand);
-                    continue;
-                }
-
-                k4a_calibration_t newCalibration;
-                if (K4A_RESULT_SUCCEEDED != k4a_device_get_calibration(cand, config.depth_mode, K4A_COLOR_RESOLUTION_OFF, &newCalibration)) {
-                    printf(RED "Device %d: Get calibration failed on reopened device (index=%d)\n" RESET, deviceIndex, i);
-                    k4a_device_stop_cameras(cand);
-                    k4a_device_close(cand);
-                    continue;
-                }
-
-                k4abt_tracker_t newTracker = NULL;
-                if (K4A_RESULT_SUCCEEDED != k4abt_tracker_create(&newCalibration, tracker_config, &newTracker)) {
-                    printf(RED "Device %d: Tracker create failed on reopened device (index=%d)\n" RESET, deviceIndex, i);
-                    k4a_device_stop_cameras(cand);
-                    k4a_device_close(cand);
-                    continue;
-                }
-
-                // Build a new DeviceHandle that will own `cand`. Do not close cand here.
-                DeviceHandle newHandle = makeDeviceHandle(cand);
-
-                // Swap the new handle and tracker into the context under lock.
-                {
-                    std::lock_guard<std::mutex> lk(deviceCtx->mutex);
-                    deviceCtx->device = newHandle;
-                    deviceCtx->serial = serial;
-                }
-
-                // Replace tracker: adopt new tracker
-                tracker = newTracker;
-                deviceSerialID = serial;
-                deviceErrorCount = 0;
-                restartAttempts = 0;
-                printf(GRN "Device %d: Successfully reopened device and recreated tracker (index=%d)\n" RESET, deviceIndex, i);
-                return true;
-            }
-
-            // exponential backoff for next scan (give longer time for OS)
-            int backoff = 500 * (1 << attempt);
-            std::this_thread::sleep_for(std::chrono::milliseconds(backoff));
-        }
-        return false;
-    };
+    // Initialize COM for this worker thread using RAII helper.
+    ComInit comInit;
+    if (!comInit.ok()) {
+        printf(YEL "Device %d: ComInit failed: 0x%08x\n" RESET, deviceIndex, (unsigned)comInit.hr);
+    } else {
+        printf(GRN "Device %d: ComInit OK\n" RESET, deviceIndex);
+    }
 
     // run forever
     try {
@@ -243,13 +129,11 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
             }
 
             k4a_image_t image;
-            //printf("Device: %d, Frame: %d\n", deviceIndex, captureFrameCount);
             captureFrameCount++;
             if (captureFrameCount == 66534) {
                 captureFrameCount = 0;
             }
 
-            // Try to get a capture with reasonable timeout so thread can detect problems
             // Acquire a local shared handle for the current iteration (protected by mutex).
             DeviceHandle localHandle;
             {
@@ -257,16 +141,8 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                 localHandle = deviceCtx->device;
             }
             if (!localHandle || !(*localHandle)) {
-                printf(YEL "Device %d: no valid device handle (will attempt reopen)\n" RESET, deviceIndex);
-                ++deviceErrorCount;
-                if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Reopen by serial failed - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
+                printf(YEL "Device %d: no valid device handle (will exit worker; supervisor will reopen)\n" RESET, deviceIndex);
+                break; // exit so supervisor can reopen and respawn
             }
 
             k4a_wait_result_t captureResult = k4a_device_get_capture(*localHandle, &capture, TIMEOUT_IN_MS);
@@ -277,28 +153,20 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                 printf(YEL "Device %d: get_capture timed out\n" RESET, deviceIndex);
                 ++deviceErrorCount;
                 if (capture != NULL) { k4a_capture_release(capture); capture = NULL; }
-                // try to recover if too many errors
+                // try to recover if too many errors -> exit and let supervisor reopen
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    printf(YEL "Device %d: Exceeded max device errors, attempting camera restart\n" RESET, deviceIndex);
-                    // First try to stop/start cameras and recreate tracker locally
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Reopen by serial failed\n" RESET, deviceIndex);
-                        // If reopen failed after attempts, exit thread (cleanly)
-                        break;
-                    }
+                    printf(YEL "Device %d: Exceeded max device errors, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue; // go to next loop iteration
             } else { // K4A_WAIT_RESULT_FAILED
                 printf(RED "Device %d: get_capture failed\n" RESET, deviceIndex);
                 ++deviceErrorCount;
                 if (capture != NULL) { k4a_capture_release(capture); capture = NULL; }
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Failed to recover after failures - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
+                    printf(RED "Device %d: Too many capture failures, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
                 continue;
             }
@@ -311,11 +179,8 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                 ++deviceErrorCount;
                 if (capture != NULL) { k4a_capture_release(capture); capture = NULL; }
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Failed to recover after enqueue failures - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
+                    printf(RED "Device %d: Too many enqueue failures, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
                 continue;
             } else if (queue_capture_result == K4A_WAIT_RESULT_TIMEOUT) {
@@ -323,11 +188,8 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                 ++deviceErrorCount;
                 if (capture != NULL) { k4a_capture_release(capture); capture = NULL; }
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Failed to recover after enqueue timeouts - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
+                    printf(RED "Device %d: Too many enqueue timeouts, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
                 continue;
             }
@@ -401,8 +263,6 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                             skeleton.joints[jointCounter].orientation.wxyz.y,
                             skeleton.joints[jointCounter].orientation.wxyz.z,
                             skeleton.joints[jointCounter].orientation.wxyz.w // TODO, SHOULD BE WXYZ. 
-                            //Flip these when demos slow down.
-                            //https://microsoft.github.io/Azure-Kinect-Body-Tracking/release/1.1.x/structk4a__quaternion__t_1_1__wxyz.html#details
                         };
 
                         // Add half-float bytes
@@ -428,9 +288,8 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                         }
 
                         if (jointCounter == 0) {
-                            char str[BUFFER_SIZE];
-                            snprintf(str, sizeof(str), "%d ", deviceID); // include a space after the deviceID
-                            printf(str);
+                            // Print deviceID safely
+                            printf("%d ", deviceID);
                         }
                     }
 
@@ -457,22 +316,16 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                 printf(YEL "Device %d: tracker pop timed out\n" RESET, deviceIndex);
                 ++deviceErrorCount;
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Failed to recover after tracker timeouts - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
+                    printf(YEL "Device %d: Too many tracker timeouts, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
             }
             else { // K4A_WAIT_RESULT_FAILED
                 printf(RED "Device %d: tracker pop failed\n" RESET, deviceIndex);
                 ++deviceErrorCount;
                 if (deviceErrorCount >= MAX_DEVICE_ERRORS) {
-                    ++restartAttempts;
-                    if (!reopenDeviceBySerial(deviceSerialID, true)) {
-                        printf(RED "Device %d: Failed to recover after tracker failures - exiting thread\n" RESET, deviceIndex);
-                        break;
-                    }
+                    printf(RED "Device %d: Too many tracker failures, exiting worker to allow supervisor reopen\n" RESET, deviceIndex);
+                    break;
                 }
             }
 
@@ -492,8 +345,6 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
     }
 
     // Deterministic shutdown: destroy tracker first, then release device handle.
-    // Swap the device handle out under lock and release it outside the lock so the
-    // device deleter runs without holding the context mutex (and after the tracker is gone).
     auto safeShutdown = [&](k4abt_tracker_t &trk) {
         if (trk) {
             k4abt_tracker_destroy(trk);
@@ -511,10 +362,8 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
             if (oldHandle) {
                 oldHandle.reset();
             }
-        } catch (const std::exception& e) {
-            printf(YEL "Device %d: Exception during device cleanup: %s\n" RESET, deviceIndex, e.what());
         } catch (...) {
-            printf(YEL "Device %d: Unknown exception during device cleanup\n" RESET, deviceIndex);
+            printf(YEL "Device %d: Exception during device cleanup\n" RESET, deviceIndex);
         }
     };
 

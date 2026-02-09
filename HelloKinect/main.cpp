@@ -138,7 +138,7 @@ int main(int argc, char* argv[])
 {
     // Brief delay to allow previous process to fully release resources (port, devices)
     // This is needed when restarting via watchdog
-    Sleep(3000);
+    Sleep(1000);
 
     // Register console handler early so Ctrl+C triggers graceful shutdown
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
@@ -242,7 +242,7 @@ int main(int argc, char* argv[])
 
             for (int jointIdx = 0; jointIdx < 32; ++jointIdx) {
                 std::string Idx = "joint" + std::to_string(jointIdx);
-                jointString +=
+                jointString += 
                     Idx + "," +
                     Idx + "_conf," +
                     Idx + "_posx," +
@@ -267,9 +267,10 @@ int main(int argc, char* argv[])
     uint32_t device_count = k4a_device_get_installed_count();
     printf("Found %d connected devices:\n", device_count);
 
-    // Use DeviceContext so workers can update device handles safely.
-    std::vector<std::shared_ptr<DeviceContext>> devices;
-    std::cout << "Initial order of devices:" << std::endl;
+    // Use DeviceManager so workers can update device handles safely and reorder safely.
+    DeviceManager deviceManager;
+
+    std::cout << "Initial order of devices (scanning)...\n";
 
     for (uint32_t i = 0; i < device_count; i++) {
         k4a_device_t device = nullptr;
@@ -280,11 +281,18 @@ int main(int argc, char* argv[])
         else {
             std::string serial_number = get_device_serial(device);
             if (!serial_number.empty()) {
-                std::cout << " Device " << i << " SN: " << serial_number << std::endl;
-                auto ctx = std::make_shared<DeviceContext>();
-                ctx->device = makeDeviceHandle(device); // take ownership with deleter
-                ctx->serial = serial_number;
-                devices.push_back(ctx);
+                std::cout << " Device index " << i << " SN: " << serial_number << std::endl;
+
+                // Preserve or create DeviceContext for this serial
+                auto ctx = deviceManager.getOrCreateBySerial(serial_number);
+
+                // Install the acquired device handle into the context under lock
+                {
+                    std::lock_guard<std::mutex> lk(ctx->mutex);
+                    ctx->device = makeDeviceHandle(device); // take ownership with deleter
+                    ctx->serial = serial_number;
+                }
+                // Note: do not k4a_device_close(device) because makeDeviceHandle takes ownership.
             }
             else {
                 k4a_device_close(device);
@@ -292,52 +300,44 @@ int main(int argc, char* argv[])
         }
     }
 
-    std::sort(devices.begin(), devices.end(), [](const std::shared_ptr<DeviceContext>& a, const std::shared_ptr<DeviceContext>& b) {
-        return a->serial < b->serial;
-        });
-
-
+    // Reorder according to desired file if present
     std::vector<std::string> desiredOrder = LoadDesiredOrder("C:\\CommonGround\\CalibrationFiles\\" + ROOMNAME + ".txt");
-    if (desiredOrder.size() != device_count) {
-        std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
-        return -1;
-    }
-    // Reorder DeviceContext vector according to desired order (match by serial)
-    std::vector<std::shared_ptr<DeviceContext>> reorderedDevices;
-    for (const auto& sn : desiredOrder) {
-        auto it = std::find_if(devices.begin(), devices.end(), [&](const std::shared_ptr<DeviceContext>& ctx) {
-            return ctx->serial == sn;
-            });
-        if (it != devices.end()) {
-            reorderedDevices.push_back(*it);
-        }
-    }
-    devices = reorderedDevices;
 
+    auto snapshot = deviceManager.snapshot();
+    if (!desiredOrder.empty()) {
+        if (desiredOrder.size() != snapshot.size()) {
+            std::cerr << RED "\nDesired order size does not match connected devices size. Check the desired order file and connected devices.\n" RESET;
+            return -1;
+        }
+        deviceManager.reorderBySerial(desiredOrder);
+    }
+
+    // Take a fresh snapshot in final order for reporting and worker creation
+    snapshot = deviceManager.snapshot();
 
     // Print sorted order and store real serials (fall back to Device_n only for display)
-    std::cout << "Sorted order of devices:" << std::endl;
-    for (size_t i = 0; i < devices.size(); i++) {
+    std::cout << "Final order of devices:" << std::endl;
+    for (size_t i = 0; i < snapshot.size(); i++) {
         // Capture real serial if we have an open handle; otherwise keep the existing label temporarily.
         std::string realSN = "";
         {
-            std::lock_guard<std::mutex> lk(devices[i]->mutex);
-            if (devices[i]->device && *devices[i]->device) {
-                realSN = get_device_serial(*devices[i]->device); // real hardware serial
+            std::lock_guard<std::mutex> lk(snapshot[i]->mutex);
+            if (snapshot[i]->device && *snapshot[i]->device) {
+                realSN = get_device_serial(*snapshot[i]->device); // real hardware serial
                 if (!realSN.empty()) {
-                    devices[i]->serial = realSN; // store physical serial used for reopen matching
+                    snapshot[i]->serial = realSN; // store physical serial used for reopen matching
                 } else {
                     // fallback to a stable display name if driver didn't provide a serial
-                    devices[i]->serial = "Device_" + std::to_string(i);
+                    snapshot[i]->serial = "Device_" + std::to_string(i);
                 }
             } else {
-                devices[i]->serial = "Device_" + std::to_string(i);
+                snapshot[i]->serial = "Device_" + std::to_string(i);
             }
         }
 
         // Keep a separate display name if you want to show a friendly label
         std::string displayName = "Device_" + std::to_string(i);
-        std::cout << " Device " << i << " SN: " << devices[i]->serial << " Name: " << displayName << std::endl;
+        std::cout << " Device " << i << " SN: " << snapshot[i]->serial << " Name: " << displayName << std::endl;
     }
 
     // Initialize Zenoh publisher
@@ -367,11 +367,12 @@ int main(int argc, char* argv[])
 
     // worker supervisors
     std::vector<std::shared_ptr<WorkerController>> supervisors;
-    supervisors.reserve(devices.size());
+    supervisors.reserve(snapshot.size());
 
-    for (size_t i = 0; i < devices.size(); i++) {
-        std::cerr << "Creating supervisor for Device with serial number: " << devices[i]->serial << std::endl;
-        auto sup = std::make_shared<WorkerController>(devices[i],
+    for (size_t i = 0; i < snapshot.size(); i++) {
+        std::cerr << "Creating supervisor for Device with serial number: " << snapshot[i]->serial << std::endl;
+        auto sup = std::make_shared<WorkerController>(
+            snapshot[i],
             static_cast<int>(i),
             outputFile,
             outputFileMutex,
@@ -404,13 +405,15 @@ int main(int argc, char* argv[])
     watchdog.stop();
     g_watchdog = nullptr;
 
-    // DeviceHandles are owned by DeviceContext -> shared_ptr destructor (deleter) will stop/close devices.
+    // DeviceHandles are owned by DeviceContext -> shared_ptr deleter will stop/close devices.
     // Reset contexts to run deleters if worker threads already exited.
-    for (size_t i = 0; i < devices.size(); i++) {
-        std::lock_guard<std::mutex> lk(devices[i]->mutex);
-        devices[i]->device.reset();
+    {
+        auto finalSnapshot = deviceManager.snapshot();
+        for (auto& ctx : finalSnapshot) {
+            std::lock_guard<std::mutex> lk(ctx->mutex);
+            ctx->device.reset();
+        }
     }
-
 
     if (RECORDTIMESTAMPS) {
         // Close the file when done

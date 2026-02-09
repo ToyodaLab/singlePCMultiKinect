@@ -7,6 +7,7 @@
 #include <ctime>
 #include <vector>
 #include <fstream>
+#include <thread> // added for async dispatch
 
 // Static member initialization
 std::atomic<int64_t> Watchdog::s_heartbeats[Watchdog::MAX_WORKERS] = {};
@@ -163,11 +164,29 @@ void Watchdog::triggerRestart(const std::string& reason, size_t workerIndex) {
 
     // If a per-worker handler is registered, call it and return (no process restart).
     {
-        std::lock_guard<std::mutex> lk(m_handlerMutex);
-        if (workerIndex < MAX_WORKERS && m_restartHandlers[workerIndex]) {
+        std::function<void(size_t)> handlerCopy;
+        {
+            std::lock_guard<std::mutex> lk(m_handlerMutex);
+            if (workerIndex < MAX_WORKERS && m_restartHandlers[workerIndex]) {
+                handlerCopy = m_restartHandlers[workerIndex];
+            }
+        }
+
+        if (handlerCopy) {
+            // Dispatch handler asynchronously so watchdog monitor thread remains responsive.
             try {
-                // Call handler on watchdog thread (keep handler lightweight).
-                m_restartHandlers[workerIndex](workerIndex);
+                std::thread([handlerCopy, workerIndex]() {
+                    try {
+                        handlerCopy(workerIndex);
+                    } catch (const std::exception& ex) {
+                        std::ostringstream oss;
+                        oss << "Restart handler threw exception: " << ex.what();
+                        std::cerr << "[Watchdog] " << oss.str() << std::endl;
+                    } catch (...) {
+                        std::cerr << "[Watchdog] Restart handler threw unknown exception" << std::endl;
+                    }
+                }).detach();
+
                 std::ostringstream oss;
                 oss << "Invoked restart handler for worker " << workerIndex;
                 logCrashEvent(oss.str());
@@ -175,13 +194,13 @@ void Watchdog::triggerRestart(const std::string& reason, size_t workerIndex) {
                 return;
             } catch (const std::exception& ex) {
                 std::ostringstream oss;
-                oss << "Restart handler threw exception: " << ex.what();
+                oss << "Failed to dispatch restart handler asynchronously: " << ex.what();
                 logCrashEvent(oss.str());
                 std::cerr << "[Watchdog] " << oss.str() << std::endl;
                 // fall through to legacy restart attempt
             } catch (...) {
-                logCrashEvent("Restart handler threw unknown exception");
-                std::cerr << "[Watchdog] Restart handler threw unknown exception" << std::endl;
+                logCrashEvent("Failed to dispatch restart handler asynchronously: unknown error");
+                std::cerr << "[Watchdog] Failed to dispatch restart handler asynchronously" << std::endl;
                 // fall through to legacy restart attempt
             }
         }

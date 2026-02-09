@@ -21,7 +21,7 @@ public:
     // Initialize with CLI arguments for restart preservation
     Watchdog(int argc, char* argv[],
              const std::string& crashLogPath = "C:\\Temp\\tempCG\\WatchdogCrash.log",
-             int timeoutSeconds = 20,
+             int timeoutSeconds = 30,
              int cooldownSeconds = 60,
              int maxRestartsBeforeCooldown = 3);
 
