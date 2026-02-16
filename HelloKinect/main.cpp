@@ -386,18 +386,15 @@ int main(int argc, char* argv[])
     // Start watchdog monitoring (it will now invoke per-worker restart handlers rather than process exit)
     watchdog.start();
 
-    // Wait for supervisors; in this design supervisors run until stop requested.
-    // Here we simply join them at program shutdown point (this is application specific).
-    for (auto& sup : supervisors) {
-        // In normal run these will run indefinitely; implement your termination policy as needed.
-        // For graceful shutdown you would call sup->stopAndJoin() from a signal handler.
+    // Wait until termination (Ctrl+C) or full-process restart requested by watchdog.
+    // This replaces the previous infinite loop that ignored g_terminate.
+    while (!g_terminate.load() && !watchdog.shouldRestart()) {
+        Sleep(500);
     }
 
-    // Example: wait until app termination - block here or implement proper signal handling as needed.
-    // For demo: sleep loop; replace with proper shutdown handling as needed.
-    while (true) { Sleep(1000); }
+    std::cerr << "Shutdown requested, stopping supervisors..." << std::endl;
 
-    // On shutdown:
+    // On shutdown: stop and join supervisors
     for (auto& sup : supervisors) {
         sup->stopAndJoin();
     }

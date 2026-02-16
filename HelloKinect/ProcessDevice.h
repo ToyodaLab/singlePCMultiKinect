@@ -47,7 +47,7 @@
 //      store it into `deviceCtx->device` while holding the `deviceCtx->mutex`.
 //
 // Device container helper (recommended): `DeviceManager`
-// - Provides a single place to manage the vector of contexts with well-defined
+/// - Provides a single place to manage the vector of contexts with well-defined
 //   thread-safe operations: snapshot, reorder, find-or-create, remove.
 // - Use `DeviceManager::snapshot()` to get a stable list of `shared_ptr`s to iterate.
 //
