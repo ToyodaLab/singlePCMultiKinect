@@ -73,6 +73,10 @@
 extern Watchdog* g_watchdog;
 extern ZenohPublisher* g_zenoh;
 
+// When true, skeletons are published as "CGS2" packets (body id + capture timestamp, see PacketV2.h)
+// instead of the original 580-byte packet. Set once in main() before any worker thread starts.
+extern bool g_packetV2;
+
 std::string get_device_serial(k4a_device_t device);
 void writeToLog(std::ofstream& outputFile, std::mutex& outputFileMutex, std::string& stringToLog);
 uint16_t floatToHalf(float value);

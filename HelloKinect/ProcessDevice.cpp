@@ -1,4 +1,5 @@
 ﻿#include "ProcessDevice.h"
+#include "PacketV2.h" // optional CGS2 packet with body id and capture timestamp
 #include "ComInit.h" // RAII wrapper for COM initialization
 #pragma comment(lib, "ole32.lib").
 #include <iostream>
@@ -291,6 +292,22 @@ void JointFinder::DetectJoints(int deviceIndex, std::shared_ptr<DeviceContext> d
                             // Print deviceID safely
                             printf("%d ", deviceID);
                         }
+                    }
+
+                    // Optional V2 packet: same joints, plus the tracker's body id and the capture timestamp.
+                    if (g_packetV2) {
+                        float positionsMm[cg::kPacketV2JointCount * 3];
+                        uint8_t confidence[cg::kPacketV2JointCount];
+                        for (size_t j = 0; j < cg::kPacketV2JointCount; ++j) {
+                            positionsMm[j * 3 + 0] = skeleton.joints[j].position.xyz.x;
+                            positionsMm[j * 3 + 1] = skeleton.joints[j].position.xyz.y;
+                            positionsMm[j * 3 + 2] = skeleton.joints[j].position.xyz.z;
+                            confidence[j] = static_cast<uint8_t>(skeleton.joints[j].confidence_level);
+                        }
+                        packet = cg::buildSensorPacketV2(
+                            static_cast<uint16_t>(deviceID), id,
+                            k4abt_frame_get_device_timestamp_usec(body_frame),
+                            positionsMm, confidence);
                     }
 
                     if (DoSendMessage) {

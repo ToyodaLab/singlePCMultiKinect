@@ -34,6 +34,9 @@ Watchdog* g_watchdog = nullptr;
 // Global pointer used by worker threads to publish (set in main())
 ZenohPublisher* g_zenoh = nullptr;
 
+// --packetv2: publish CGS2 packets (body id + capture timestamp) instead of the original 580-byte packet
+bool g_packetV2 = false;
+
 struct KinectDevice {
     k4a_device_t device;
     std::string serial_number;
@@ -114,6 +117,7 @@ void printHelp() {
     std::cout << "Usage: HelloKinect [options]\n"
         << "Options:\n"
         << "  --roomName <roomname>   Name of room file to load IDs from\n"
+        << "  --packetv2              Publish CGS2 packets with body id and capture timestamp (needs a V2-aware receiver)\n"
         << "  --logeverything         Log all timestamps and events\n"
         << "  --log <file_path>       Specify log file path (default: C:\\Temp\\tempCG\\KinectLog.txt)\n"
         << "  --stress-hang <frames>  [TEST] Simulate hang after N frames to test watchdog\n"
@@ -174,6 +178,9 @@ int main(int argc, char* argv[])
         else if (arg == "--logeverything") {
             RECORDTIMESTAMPS = true;
         }
+        else if (arg == "--packetv2") {
+            g_packetV2 = true;
+        }
         else if (arg == "--log") {
             if (i + 1 < argc) {
                 LOGFILEPATH = argv[++i];
@@ -210,6 +217,7 @@ int main(int argc, char* argv[])
     printf("Start Input Parameters\n");
     printf("----------------------\n\n");
     printf(YEL "Room name = %s\n" RESET, ROOMNAME.c_str());
+    printf("Packet format = %s\n", g_packetV2 ? "CGS2 (body id + timestamp)" : "legacy 580-byte");
     printf("Logging timestamps = %s\n", RECORDTIMESTAMPS ? "true" : "false");
     printf("Log file path (if using) = %s\n", LOGFILEPATH.c_str());
     printf("----------------------\n\n");

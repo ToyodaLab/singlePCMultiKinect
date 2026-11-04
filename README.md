@@ -35,6 +35,7 @@ Run the executable with the following options:
 |-------------------------|-----------------------------------------------------------------------------|
 | `--onlyGetIDs`          | Only get Kinect serial IDs and save to file                                 |
 | `--opencaptureframes`   | Open capture frames for debugging (slows down processing)                   |
+| `--packetv2`            | Publish CGS2 packets carrying the tracker's body id and the capture timestamp (needs a V2-aware receiver; default is the original 580-byte packet) |
 | `--notransmission`      | Do not send joint data via TCP                                              |
 | `--desiredorder`        | Override Kinect order based on `desiredorderedDevices.txt`                  |
 | `--logeverything`       | Log all timestamps and events                                               |
